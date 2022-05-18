@@ -18,6 +18,8 @@ find_package(pybind11 REQUIRED)
 
 find_package(LLVM REQUIRED CONFIG)
 find_package(MLIR REQUIRED CONFIG)
+find_package(Python3 COMPONENTS Interpreter Development)
+
 
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
@@ -62,13 +64,14 @@ set(HEADERS_LIST
     )
 
 pybind11_add_module(${PROJECT_NAME} ${SOURCES_LIST} ${HEADERS_LIST})
+#add_library(${PROJECT_NAME} STATIC ${SOURCES_LIST} ${HEADERS_LIST})
 
 if (CMAKE_SYSTEM_NAME STREQUAL Linux)
-    target_link_options(${PROJECT_NAME} PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/export.txt")
+  target_link_options(${PROJECT_NAME} PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/export.txt")
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL Darwin)
-    target_link_libraries(${PROJECT_NAME} PRIVATE "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/export_darwin.txt")
+  target_link_libraries(${PROJECT_NAME} PRIVATE "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/export_darwin.txt")
 endif()
 
 apply_llvm_compile_flags(${PROJECT_NAME})
@@ -94,9 +97,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     MLIRSPIRVSerialization
     MLIRTensorTransforms
     MLIRReconcileUnrealizedCasts
+    ${Python3_LIBRARIES}
     )
 
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE
+    ${Python3_INCLUDE_DIRS}
     ${MLIR_INCLUDE_DIRS}
     PRIVATE
     ./lib)
@@ -137,3 +142,9 @@ if (NOT _tmp_path1 STREQUAL _tmp_path2)
         PATTERN "*.in"
         )
 endif()
+
+install(DIRECTORY "lib" #${CMAKE_SOURCE_DIR}/" # source directory
+        DESTINATION "mlir/include/mlir-extensions/compiler" # target directory
+        FILES_MATCHING # install only matched files
+        PATTERN "lowering.hpp" # select header files
+)

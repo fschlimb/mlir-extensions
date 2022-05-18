@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <iostream>
+
 #include "pipelines/plier_to_linalg.hpp"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
@@ -45,12 +47,15 @@
 #include "mlir-extensions/dialect/plier/dialect.hpp"
 #include "mlir-extensions/dialect/plier_util/dialect.hpp"
 
+#include "mlir-extensions/dialect/ptensor/dialect.hpp"
+
 #include "pipelines/plier_to_scf.hpp"
 #include "pipelines/plier_to_std.hpp"
 #include "pipelines/pre_low_simplifications.hpp"
 
 #include "mlir-extensions/Conversion/SCFToAffine/SCFToAffine.h"
 #include "mlir-extensions/transforms/call_lowering.hpp"
+#include "mlir-extensions/transforms/ptensor_lowering.hpp"
 #include "mlir-extensions/transforms/canonicalize_reductions.hpp"
 #include "mlir-extensions/transforms/cast_utils.hpp"
 #include "mlir-extensions/transforms/common_opts.hpp"
@@ -284,6 +289,7 @@ static mlir::Value toTensor(mlir::Location loc, mlir::PatternRewriter &rewriter,
                                             tensorType.getElementType());
     return rewriter.create<mlir::bufferization::ToMemrefOp>(loc, memrefType,
                                                             val);
+
   }
   return val;
 }
@@ -305,33 +311,49 @@ castRetTypes(mlir::Location loc, mlir::PatternRewriter &rewriter,
   return results;
 }
 
-struct NumpyCallsLowering final : public plier::CallOpLowering {
-  NumpyCallsLowering(mlir::MLIRContext *context)
-      : CallOpLowering(context),
+struct NumpyCallsLowering final : public plier::CallOpLowering
+{
+    NumpyCallsLowering(mlir::MLIRContext *context)
+        : CallOpLowering(context),
         resolver("numba_dpcomp.mlir.numpy.funcs", "registry") {}
 
-protected:
-  virtual mlir::LogicalResult
-  resolveCall(plier::PyCallOp op, mlir::StringRef name, mlir::Location loc,
-              mlir::PatternRewriter &rewriter, mlir::ValueRange args,
-              KWargs kwargs) const override {
-    for (auto &handler : builtinFuncsHandlers)
-      if (handler.first == name)
-        return handler.second(op, args, kwargs, rewriter);
+ protected:
+    virtual mlir::LogicalResult resolveCall(plier::PyCallOp op, mlir::StringRef name, mlir::Location loc,
+                                            mlir::PatternRewriter &rewriter, mlir::ValueRange args,
+                                            KWargs kwargs) const override {
+        if(name=="numpy.arange")
+            return resolveARange(op, loc, rewriter, args, kwargs);
 
-    auto res = resolver.rewriteFunc(name, loc, rewriter, args, kwargs);
-    if (!res)
-      return mlir::failure();
+        for (auto &handler : builtinFuncsHandlers) {
+            if (handler.first == name) {
+                return handler.second(op, args, kwargs, rewriter);
+            }
+        }
 
-    auto results = castRetTypes(loc, rewriter, op, res);
+        auto res = resolver.rewriteFunc(name, loc, rewriter, args, kwargs);
+        if (!res)
+            return mlir::failure();
 
-    rerunScfPipeline(op);
-    rewriter.replaceOp(op, results);
-    return mlir::success();
-  }
+        auto results = castRetTypes(loc, rewriter, op, res);
 
-private:
-  PyLinalgResolver resolver;
+        rerunScfPipeline(op);
+        rewriter.replaceOp(op, results);
+        return mlir::success();
+    }
+
+    mlir::LogicalResult resolveARange(plier::PyCallOp op, mlir::Location loc,
+                                      mlir::PatternRewriter &rewriter, mlir::ValueRange args,
+                                      KWargs kwargs) const
+    {
+        // auto attr = rewriter.getBoolAttr(true);
+        // auto dist = rewriter.create<mlir::arith::ConstantOp>(loc, attr);
+        rewriter.replaceOpWithNewOp<::ptensor::ARangeOp>(op, args[0], args[1], args[2], true);
+        return mlir::success();
+    }
+
+
+ private:
+    PyLinalgResolver resolver;
 };
 
 struct NumpyAttrsLowering : public mlir::OpRewritePattern<plier::GetattrOp> {
@@ -371,32 +393,38 @@ struct NumpyBinOpLowering : public mlir::OpRewritePattern<plier::BinOp> {
 
   mlir::LogicalResult
   matchAndRewrite(plier::BinOp op,
-                  mlir::PatternRewriter &rewriter) const override {
-    auto lhs = skipCasts(op.lhs());
-    auto rhs = skipCasts(op.rhs());
+                  mlir::PatternRewriter &rewriter) const override
+    {
 
-    if (!lhs.getType().isa<mlir::ShapedType>() &&
-        !rhs.getType().isa<mlir::ShapedType>())
-      return mlir::failure();
+        auto lhs = skipCasts(op.lhs());
+        auto rhs = skipCasts(op.rhs());
 
-    auto name = op.op();
+        if (!lhs.getType().isa<mlir::ShapedType>() &&
+            !rhs.getType().isa<mlir::ShapedType>())
+            return mlir::failure();
 
-    for (auto it : plier::getOperators()) {
-      if (it.op == name) {
-        auto loc = op->getLoc();
-        auto res = resolver.rewriteFunc(llvm::Twine("operator.") + it.name, loc,
-                                        rewriter, {lhs, rhs}, {});
-        if (!res)
-          return mlir::failure();
+        auto name = op.op();
+        if(name == "+") {
+            rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, op.lhs(), op.rhs(), true);
+            return mlir::success();
+        }
 
-        auto results = castRetTypes(loc, rewriter, op, res);
+        for (auto it : plier::getOperators()) {
+            if (it.op == name) {
+                auto loc = op->getLoc();
+                auto res = resolver.rewriteFunc(llvm::Twine("operator.") + it.name, loc,
+                                                rewriter, {lhs, rhs}, {});
+                if (!res)
+                    return mlir::failure();
 
-        rerunScfPipeline(op);
-        rewriter.replaceOp(op, results);
-        return mlir::success();
-      }
-    }
-    return mlir::failure();
+                auto results = castRetTypes(loc, rewriter, op, res);
+
+                rerunScfPipeline(op);
+                rewriter.replaceOp(op, results);
+                return mlir::success();
+            }
+        }
+        return mlir::failure();
   }
 
 private:
@@ -585,6 +613,10 @@ struct NumpyCallsLoweringPass
     : public plier::RewriteWrapperPass<
           NumpyCallsLoweringPass, void, void, NumpyCallsLowering,
           NumpyAttrsLowering, NumpyBinOpLowering, ExternalCallsLowering> {};
+
+struct PTensorLoweringPass
+    : public plier::RewriteWrapperPass<PTensorLoweringPass, void, void, ptensor::ARangeLowering, ptensor::EWBinOpLowering>
+{};
 
 static mlir::Value index_cast(mlir::Value value, mlir::Location loc,
                               mlir::OpBuilder &builder) {
@@ -1556,6 +1588,7 @@ struct PlierToLinalgPass
     registry.insert<mlir::tensor::TensorDialect>();
     registry.insert<plier::PlierDialect>();
     registry.insert<plier::PlierUtilDialect>();
+    registry.insert<::ptensor::PTensorDialect>();
   }
 
   void runOnOperation() override;
@@ -2170,10 +2203,12 @@ void PlierToLinalgPass::runOnOperation() {
   auto materializeCast = [](mlir::OpBuilder &builder, mlir::Type type,
                             mlir::ValueRange inputs,
                             mlir::Location loc) -> llvm::Optional<mlir::Value> {
-    if (inputs.size() == 1)
-      return builder
-          .create<mlir::UnrealizedConversionCastOp>(loc, type, inputs.front())
-          .getResult(0);
+      if (inputs.size() == 1) {
+          auto memrefType = mlir::MemRefType::get({-1}, builder.getI64Type());
+          //auto x = builder.create<mlir::bufferization::ToMemrefOp>(loc, memrefType, inputs.front()).getResult();
+          auto x = builder.create<plier::CastOp>(loc, memrefType, inputs.front()).getResult();
+          return builder.create<mlir::UnrealizedConversionCastOp>(loc, type, x).getResult(0);
+      }
 
     return llvm::None;
   };
@@ -2469,7 +2504,7 @@ void MakeTensorsSignlessPass::runOnOperation() {
                                 mlir::ValueRange inputs,
                                 mlir::Location loc) -> mlir::Value {
     assert(inputs.size() == 1);
-    return builder.create<plier::SignCastOp>(loc, type, inputs[0]);
+    return builder.create<plier::SignCastOp>(loc, type, inputs.front());
   };
   typeConverter.addArgumentMaterialization(materializeSignCast);
   typeConverter.addSourceMaterialization(materializeSignCast);
@@ -2892,6 +2927,7 @@ static void populatePlierToLinalgGenPipeline(mlir::OpPassManager &pm) {
   pm.addPass(std::make_unique<PlierToLinalgPass>());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(std::make_unique<NumpyCallsLoweringPass>());
+  pm.addPass(std::make_unique<PTensorLoweringPass>());
   pm.addPass(plier::createForceInlinePass());
   pm.addPass(mlir::createSymbolDCEPass());
   pm.addNestedPass<mlir::FuncOp>(std::make_unique<PostPlierToLinalgPass>());

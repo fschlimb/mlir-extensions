@@ -40,6 +40,7 @@ endif()
 add_subdirectory(include/mlir-extensions/dialect/plier)
 add_subdirectory(include/mlir-extensions/dialect/plier_util)
 add_subdirectory(include/mlir-extensions/dialect/gpu_runtime/IR)
+add_subdirectory(include/mlir-extensions/dialect/ptensor)
 
 if (IMEX_ENABLE_IGPU_DIALECT)
     add_subdirectory(tools)
@@ -56,8 +57,10 @@ set(SOURCES_LIST
     lib/dialect/gpu_runtime/IR/gpu_runtime_ops.cpp
     lib/dialect/plier/dialect.cpp
     lib/dialect/plier_util/dialect.cpp
+    lib/dialect/ptensor/dialect.cpp
     lib/transforms/arg_lowering.cpp
     lib/transforms/call_lowering.cpp
+    lib/transforms/ptensor_lowering.cpp
     lib/transforms/canonicalize_reductions.cpp
     lib/transforms/cast_lowering.cpp
     lib/transforms/cast_utils.cpp
@@ -89,8 +92,10 @@ set(HEADERS_LIST
     include/mlir-extensions/dialect/gpu_runtime/IR/gpu_runtime_ops.hpp
     include/mlir-extensions/dialect/plier/dialect.hpp
     include/mlir-extensions/dialect/plier_util/dialect.hpp
+    include/mlir-extensions/dialect/ptensor/dialect.hpp
     include/mlir-extensions/transforms/arg_lowering.hpp
     include/mlir-extensions/transforms/call_lowering.hpp
+    include/mlir-extensions/transforms/ptensor_lowering.hpp
     include/mlir-extensions/transforms/canonicalize_reductions.hpp
     include/mlir-extensions/transforms/cast_lowering.hpp
     include/mlir-extensions/transforms/cast_utils.hpp
@@ -153,4 +158,4 @@ target_include_directories(${MLIR_EXTENSIONS_LIB} PUBLIC
     ${PROJECT_BINARY_DIR}/mlir-extensions/include
     )
 
-add_dependencies(${MLIR_EXTENSIONS_LIB} MLIRPlierOpsIncGen MLIRPlierUtilOpsIncGen MLIRGpuRuntimeOpsIncGen)
+add_dependencies(${MLIR_EXTENSIONS_LIB} MLIRPlierOpsIncGen MLIRPlierUtilOpsIncGen MLIRGpuRuntimeOpsIncGen MLIRPTensorOpsIncGen)

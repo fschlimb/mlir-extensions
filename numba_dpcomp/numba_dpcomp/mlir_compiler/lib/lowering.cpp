@@ -37,6 +37,8 @@
 #include "mlir-extensions/dialect/plier/dialect.hpp"
 #include "mlir-extensions/dialect/plier_util/dialect.hpp"
 
+#include "mlir-extensions/dialect/ptensor/dialect.hpp"
+
 #include "mlir-extensions/compiler/compiler.hpp"
 #include "mlir-extensions/compiler/pipeline_registry.hpp"
 #include "mlir-extensions/utils.hpp"
@@ -49,6 +51,7 @@
 #include "pipelines/plier_to_scf.hpp"
 #include "pipelines/plier_to_std.hpp"
 #include "pipelines/pre_low_simplifications.hpp"
+
 
 namespace py = pybind11;
 namespace {
@@ -155,6 +158,7 @@ struct PlierLowerer final {
     ctx.loadDialect<mlir::func::FuncDialect>();
     ctx.loadDialect<plier::PlierDialect>();
     ctx.loadDialect<plier::PlierUtilDialect>();
+    ctx.loadDialect<::ptensor::PTensorDialect>();
   }
 
   mlir::FuncOp lower(const py::object &compilationContext, mlir::ModuleOp mod,
@@ -696,10 +700,6 @@ static py::bytes genLLModule(mlir::ModuleOp mod) {
   return serializeMod(*llMod);
 }
 
-struct ModuleSettings {
-  bool enableGpuPipeline = false;
-};
-
 static void createPipeline(plier::PipelineRegistry &registry,
                            const ModuleSettings &settings) {
   registerBasePipeline(registry);
@@ -720,13 +720,6 @@ static void createPipeline(plier::PipelineRegistry &registry,
   }
 }
 
-struct Module {
-  mlir::MLIRContext context;
-  plier::PipelineRegistry registry;
-  mlir::ModuleOp module;
-
-  Module(const ModuleSettings &settings) { createPipeline(registry, settings); }
-};
 
 static void runCompiler(Module &mod, const py::object &compilationContext) {
   auto &context = mod.context;
@@ -739,7 +732,21 @@ static void runCompiler(Module &mod, const py::object &compilationContext) {
   plier::CompilerContext compiler(context, settings, registry);
   compiler.run(module);
 }
+
+static void runCompiler_cpp(Module &mod) {
+  auto &context = mod.context;
+  auto &module = mod.module;
+  auto &registry = mod.registry;
+
+  plier::CompilerContext compiler(context, {}, registry);
+  compiler.run(module);
+}
 } // namespace
+
+Module::Module(const ModuleSettings &settings)
+{
+    createPipeline(registry, settings);
+}
 
 void initCompiler(py::dict settings) {
   auto debugType = settings["debug_type"].cast<py::list>();
@@ -754,6 +761,10 @@ void initCompiler(py::dict settings) {
     }
     llvm::setCurrentDebugTypes(types, static_cast<unsigned>(debugTypeSize));
   }
+}
+void initCompiler()
+{
+    initCompiler({});
 }
 
 template <typename T>
@@ -789,11 +800,33 @@ py::capsule lowerFunction(const py::object &compilationContext,
   return py::capsule(func.getOperation()); // no dtor, func owned by module
 }
 
+extern DLL_PUBLIC std::shared_ptr<Module> createModule_cpp()
+{
+  ModuleSettings modSettings;
+  modSettings.enableGpuPipeline = false;
+
+  auto mod = std::make_shared<Module>(modSettings);
+  mod->module = mlir::ModuleOp::create(mlir::OpBuilder(&mod->context).getUnknownLoc());
+
+  return mod;
+}
+
+extern DLL_PUBLIC void compileModule_cpp(std::shared_ptr<Module> mod)
+{
+    runCompiler_cpp(*mod);
+    // return genLLModule(mod->module);
+}
+
 py::bytes compileModule(const py::object &compilationContext,
                         const py::capsule &pyMod) {
   auto mod = static_cast<Module *>(pyMod);
   runCompiler(*mod, compilationContext);
   return genLLModule(mod->module);
+}
+
+void compileModule(mlir::ModuleOp & mod)
+{
+    auto m = createModule({});
 }
 
 py::str moduleStr(const py::capsule &pyMod) {

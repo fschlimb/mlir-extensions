@@ -56,7 +56,7 @@ if int(os.environ.get("DPCOMP_SETUP_RUN_CMAKE", 1)):
 
     cmake_cmd += [
         "..",
-        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_BUILD_TYPE=Debug",
         "-DLLVM_DIR=" + LLVM_DIR,
         "-DMLIR_DIR=" + MLIR_DIR,
         "-DTBB_DIR=" + TBB_DIR,
@@ -101,10 +101,10 @@ if int(os.environ.get("DPCOMP_SETUP_RUN_CMAKE", 1)):
         cmake_cmd, stderr=subprocess.STDOUT, shell=False, cwd=cmake_build_dir
     )
     subprocess.check_call(
-        ["cmake", "--build", ".", "--config", "Release"], cwd=cmake_build_dir
+        ["cmake", "--build", ".", "--config", "Debug"], cwd=cmake_build_dir
     )
     subprocess.check_call(
-        ["cmake", "--install", ".", "--config", "Release"], cwd=cmake_build_dir
+        ["cmake", "--install", ".", "--config", "Debug"], cwd=cmake_build_dir
     )
 
 # =============================================================================
