@@ -20,6 +20,42 @@
 #include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/Types.h>
 
+namespace ptensor {
+
+// The set of supported operations
+enum EWBinOpId : int {
+    ADD,
+    AND,
+    ATAN2,
+    BITWISE_AND,
+    BITWISE_LEFT_SHIFT,
+    BITWISE_OR,
+    BITWISE_RIGHT_SHIFT,
+    BITWISE_XOR,
+    EQUAL,
+    FLOOR_DIVIDE,
+    GREATER,
+    GREATER_EQUAL,
+    LESS,
+    LESS_EQUAL,
+    LOGADDEXP,
+    LOGICAL_AND,
+    LOGICAL_OR,
+    LOGICAL_XOR,
+    LSHIFT,
+    MATMUL,
+    MOD,
+    MULTIPLY,
+    NOT_EQUAL,
+    OR,
+    POW,
+    SUBTRACT,
+    TRUE_DIVIDE,
+    XOR,
+    EWBINOPID_LAST
+};
+}
+
 #include <mlir-extensions/dialect/ptensor/PTensorOpsDialect.h.inc>
 #define GET_OP_CLASSES
 #include <mlir-extensions/dialect/ptensor/PTensorOps.h.inc>

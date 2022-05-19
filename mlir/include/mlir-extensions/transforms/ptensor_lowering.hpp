@@ -36,6 +36,8 @@ namespace ptensor {
 
         mlir::LogicalResult
         matchAndRewrite(ptensor::EWBinOp op, mlir::PatternRewriter &rewriter) const override;
+
+        static mlir::Type getEWBinOpRType(mlir::PatternRewriter &rewriter, EWBinOpId op, const mlir::Type & lhsType, const mlir::Type & rhsType);
     };
 
 } // namespace ptensor

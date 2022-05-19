@@ -30,12 +30,12 @@ namespace ptensor {
         ARangeOp::build(builder, state, dataType, start, stop, step, dist);
     }
 
-    void EWBinOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state, ::mlir::Value lhs, ::mlir::Value rhs, bool dist)
+    void EWBinOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state, ::ptensor::EWBinOpId op, ::mlir::Value lhs, ::mlir::Value rhs, bool dist)
     {
         //auto dataType = lhs.getType().dyn_cast<::mlir::RankedTensorType>();
         //assert(dataType);
         auto dataType = ::mlir::RankedTensorType::get({-1}, builder.getI64Type());
-        EWBinOp::build(builder, state, dataType, lhs, rhs, dist);
+        EWBinOp::build(builder, state, dataType, builder.getI32IntegerAttr(op), lhs, rhs, dist);
     }
 } // namespace ptensor
 

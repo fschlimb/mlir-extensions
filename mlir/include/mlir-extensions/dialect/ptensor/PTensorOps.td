@@ -60,13 +60,13 @@ def ARangeOp : PTensor_Op<"arange", [NoSideEffect]> {
 
 def EWBinOp : PTensor_Op<"ewbin", [NoSideEffect]> {
     // arange takes 3 integer attributes (for now): start, stop and step
-    let arguments = (ins AnyType : $lhs, AnyType : $rhs, BoolAttr : $dist);
+    let arguments = (ins AnyAttr: $op, AnyType : $lhs, AnyType : $rhs, BoolAttr : $dist);
 
     // result is a tensor
     let results = (outs AnyType);
     
     // Trivial builder
-    let builders = [OpBuilder<(ins "::mlir::Value" : $lhs, "::mlir::Value" : $rhs, "bool" : $dist)>];
+    let builders = [OpBuilder<(ins  "::ptensor::EWBinOpId" : $op, "::mlir::Value" : $lhs, "::mlir::Value" : $rhs, "bool" : $dist)>];
 }
 
 #endif // _PTENSOR_OPS_INCLUDED_

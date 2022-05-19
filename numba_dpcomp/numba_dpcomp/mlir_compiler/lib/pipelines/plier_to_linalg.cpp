@@ -405,7 +405,10 @@ struct NumpyBinOpLowering : public mlir::OpRewritePattern<plier::BinOp> {
 
         auto name = op.op();
         if(name == "+") {
-            rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, op.lhs(), op.rhs(), true);
+            rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, ::ptensor::ADD, op.lhs(), op.rhs(), true);
+            return mlir::success();
+        } else if(name == "*") {
+            rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, ::ptensor::MULTIPLY, op.lhs(), op.rhs(), true);
             return mlir::success();
         }
 
@@ -614,6 +617,7 @@ struct NumpyCallsLoweringPass
           NumpyCallsLoweringPass, void, void, NumpyCallsLowering,
           NumpyAttrsLowering, NumpyBinOpLowering, ExternalCallsLowering> {};
 
+// Lowering PTensor ops (to Linalg)
 struct PTensorLoweringPass
     : public plier::RewriteWrapperPass<PTensorLoweringPass, void, void, ptensor::ARangeLowering, ptensor::EWBinOpLowering>
 {};
@@ -2204,8 +2208,8 @@ void PlierToLinalgPass::runOnOperation() {
                             mlir::ValueRange inputs,
                             mlir::Location loc) -> llvm::Optional<mlir::Value> {
       if (inputs.size() == 1) {
+          // FIXME PTensor: for now we simply assume we have i64 tensors
           auto memrefType = mlir::MemRefType::get({-1}, builder.getI64Type());
-          //auto x = builder.create<mlir::bufferization::ToMemrefOp>(loc, memrefType, inputs.front()).getResult();
           auto x = builder.create<plier::CastOp>(loc, memrefType, inputs.front()).getResult();
           return builder.create<mlir::UnrealizedConversionCastOp>(loc, type, x).getResult(0);
       }
