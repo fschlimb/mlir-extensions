@@ -57,5 +57,7 @@ enum EWBinOpId : int {
 }
 
 #include <mlir-extensions/dialect/ptensor/PTensorOpsDialect.h.inc>
+#define GET_TYPEDEF_CLASSES
+#include <mlir-extensions/dialect/ptensor/PTensorOpsTypes.h.inc>
 #define GET_OP_CLASSES
 #include <mlir-extensions/dialect/ptensor/PTensorOps.h.inc>

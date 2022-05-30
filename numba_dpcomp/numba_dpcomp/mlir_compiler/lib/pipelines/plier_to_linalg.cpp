@@ -28,6 +28,7 @@
 #include <mlir/Dialect/Bufferization/Transforms/Passes.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Func/Transforms/Passes.h>
+#include <mlir/Dialect/Func/Transforms/FuncConversions.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Linalg/Passes.h>
 #include <mlir/Dialect/Linalg/Transforms/Transforms.h>
@@ -80,6 +81,11 @@
 #include "py_linalg_resolver.hpp"
 
 #include <cctype>
+
+/*
+  plier.call<numpy>(plier.array) -> linalg.generic(mlir::type)
+  plier.binop(plier.array) -> linalg.generic(PyType, PyType) -> linalg.generic(mlir::Type, mlir::Type)
+ */
 
 namespace {
 static int64_t getOptLevel(mlir::Operation *op) {
@@ -187,7 +193,7 @@ static mlir::Type mapArrayType(mlir::MLIRContext &ctx,
         if (mlir::BaseMemRefType::isValidElementType(type)) {
           llvm::SmallVector<int64_t> shape(desc->dims,
                                            mlir::ShapedType::kDynamicSize);
-          return mlir::MemRefType::get(shape, type);
+          return ::ptensor::PTensorType::get(&ctx, ::mlir::RankedTensorType::get(shape, type), true); //mlir::MemRefType::get(shape, type);
         }
       }
     }
@@ -321,8 +327,6 @@ struct NumpyCallsLowering final : public plier::CallOpLowering
     virtual mlir::LogicalResult resolveCall(plier::PyCallOp op, mlir::StringRef name, mlir::Location loc,
                                             mlir::PatternRewriter &rewriter, mlir::ValueRange args,
                                             KWargs kwargs) const override {
-        if(name=="numpy.arange")
-            return resolveARange(op, loc, rewriter, args, kwargs);
 
         for (auto &handler : builtinFuncsHandlers) {
             if (handler.first == name) {
@@ -341,16 +345,22 @@ struct NumpyCallsLowering final : public plier::CallOpLowering
         return mlir::success();
     }
 
-    mlir::LogicalResult resolveARange(plier::PyCallOp op, mlir::Location loc,
-                                      mlir::PatternRewriter &rewriter, mlir::ValueRange args,
-                                      KWargs kwargs) const
-    {
-        // auto attr = rewriter.getBoolAttr(true);
-        // auto dist = rewriter.create<mlir::arith::ConstantOp>(loc, attr);
-        rewriter.replaceOpWithNewOp<::ptensor::ARangeOp>(op, args[0], args[1], args[2], true);
-        return mlir::success();
-    }
-
+    // mlir::LogicalResult resolveARange(plier::PyCallOp op, mlir::Location loc,
+    //                                   mlir::PatternRewriter &rewriter, mlir::ValueRange args,
+    //                                   KWargs kwargs) const
+    // {
+    //     // auto attr = rewriter.getBoolAttr(true);
+    //     // auto dist = rewriter.create<mlir::arith::ConstantOp>(loc, attr);
+    //     auto typ = op.getType().dyn_cast<plier::PyType>();
+    //     auto nm = typ.getName();
+    //     auto desc = parseArrayDesc(nm);
+    //     ::mlir::Type rtyp;
+    //     if(desc->name == "int64") rtyp = ::mlir::RankedTensorType::get({-1}, rewriter.getI64Type());
+    //     else if(desc->name == "float32") rtyp = ::mlir::RankedTensorType::get({-1}, rewriter.getF32Type());
+    //     else assert(false);
+    //     rewriter.replaceOpWithNewOp<::ptensor::ARangeOp>(op, rtyp, args[0], args[1], args[2], true);
+    //     return mlir::success();
+    // }
 
  private:
     PyLinalgResolver resolver;
@@ -404,13 +414,13 @@ struct NumpyBinOpLowering : public mlir::OpRewritePattern<plier::BinOp> {
             return mlir::failure();
 
         auto name = op.op();
-        if(name == "+") {
-            rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, ::ptensor::ADD, op.lhs(), op.rhs(), true);
-            return mlir::success();
-        } else if(name == "*") {
-            rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, ::ptensor::MULTIPLY, op.lhs(), op.rhs(), true);
-            return mlir::success();
-        }
+        // if(name == "+") {
+        //     rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, ::ptensor::ADD, op.lhs(), op.rhs(), true);
+        //     return mlir::success();
+        // } else if(name == "*") {
+        //     rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, ::ptensor::MULTIPLY, op.lhs(), op.rhs(), true);
+        //     return mlir::success();
+        // }
 
         for (auto it : plier::getOperators()) {
             if (it.op == name) {
@@ -615,12 +625,132 @@ public:
 struct NumpyCallsLoweringPass
     : public plier::RewriteWrapperPass<
           NumpyCallsLoweringPass, void, void, NumpyCallsLowering,
-          NumpyAttrsLowering, NumpyBinOpLowering, ExternalCallsLowering> {};
+          NumpyAttrsLowering, NumpyBinOpLowering, ExternalCallsLowering>
+{};
+
+
+// *************************************************
+// ******************** PTensor ********************
+// *************************************************
+struct LowerPTensorPass
+     : public mlir::PassWrapper<LowerPTensorPass,
+                                ::mlir::OperationPass<::mlir::ModuleOp>>
+{
+  virtual void
+  getDependentDialects(::mlir::DialectRegistry &registry) const override
+  {
+      registry.insert<::plier::PlierDialect>();
+      registry.insert<::ptensor::PTensorDialect>();
+  }
+
+  void runOnOperation() override
+  {
+      auto & ctxt = getContext();
+      ::mlir::ConversionTarget target(ctxt);
+      ::mlir::RewritePatternSet patterns(&ctxt);
+      
+      target.addDynamicallyLegalOp<::plier::PyCallOp>([&](::plier::PyCallOp op) -> bool {
+              auto name = op.func_name();
+              if(name == "numpy.arange") return false;
+              return true;
+          });
+      target.addIllegalOp<::plier::BinOp>();
+      target.addLegalDialect<::ptensor::PTensorDialect>();
+      
+      mlir::TypeConverter typeConverter;
+      // Convert unknown types to itself
+      typeConverter.addConversion([](::mlir::Type type) { return type; });
+      populateStdTypeConverter(ctxt, typeConverter);
+      populateArrayTypeConverter(ctxt, typeConverter);
+
+      auto materializeCast = [](::mlir::OpBuilder &builder, ::mlir::Type type,
+                                ::mlir::ValueRange inputs,
+                                ::mlir::Location loc) -> ::llvm::Optional<::mlir::Value> {
+          if (inputs.size() == 1) {
+              return builder.create<::mlir::UnrealizedConversionCastOp>(loc, type, inputs.front()).getResult(0);
+          }
+          
+          return ::llvm::None;
+      };
+      //typeConverter.addArgumentMaterialization(materializeCast);
+      typeConverter.addSourceMaterialization(materializeCast);
+      //typeConverter.addTargetMaterialization(materializeCast);
+      
+      patterns.insert<::ptensor::FromNumpyCall, ::ptensor::FromBinOp>(typeConverter, &ctxt);
+
+      if(::mlir::failed(::mlir::applyPartialConversion(getOperation(), target, ::std::move(patterns)))) {
+          signalPassFailure();
+      }
+  }
+ };
 
 // Lowering PTensor ops (to Linalg)
 struct PTensorLoweringPass
-    : public plier::RewriteWrapperPass<PTensorLoweringPass, void, void, ptensor::ARangeLowering, ptensor::EWBinOpLowering>
-{};
+    : public mlir::PassWrapper<PTensorLoweringPass, ::mlir::OperationPass<::mlir::ModuleOp>>
+{
+    virtual void getDependentDialects(::mlir::DialectRegistry &registry) const override
+    {
+        registry.insert<::ptensor::PTensorDialect>();
+        registry.insert<::mlir::linalg::LinalgDialect>();
+        registry.insert<::mlir::AffineDialect>();
+        registry.insert<::mlir::func::FuncDialect>();
+        registry.insert<::mlir::tensor::TensorDialect>();
+        registry.insert<::mlir::arith::ArithmeticDialect>();
+    }
+
+    void runOnOperation() override
+    {
+        auto & ctxt = getContext();
+        ::mlir::ConversionTarget target(ctxt);
+        ::mlir::TypeConverter typeConverter;
+        // Convert unknown types to itself
+        typeConverter.addConversion([](::mlir::Type type) { return type; });
+        typeConverter.addConversion(
+            [&typeConverter](::ptensor::PTensorType type) -> llvm::Optional<::mlir::Type> {
+                return type.getRtensor();
+        });
+        auto materializeCast = [](::mlir::OpBuilder &builder, ::mlir::Type type,
+                                  ::mlir::ValueRange inputs,
+                                  ::mlir::Location loc) -> ::llvm::Optional<::mlir::Value> {
+            if (inputs.size() == 1 && type != inputs.front().getType()) {
+                return builder.create<::mlir::UnrealizedConversionCastOp>(loc, type, inputs.front()).getResult(0);
+            }
+            
+            return ::llvm::None;
+        };
+        //typeConverter.addArgumentMaterialization(materializeCast);
+        //typeConverter.addSourceMaterialization(materializeCast);
+        //typeConverter.addTargetMaterialization(materializeCast);
+
+        target.addIllegalDialect<::ptensor::PTensorDialect>();
+        target.addLegalDialect<::mlir::linalg::LinalgDialect>();
+        target.addLegalDialect<::mlir::AffineDialect>();
+        target.addLegalDialect<::mlir::tensor::TensorDialect>();
+        target.addLegalDialect<::mlir::arith::ArithmeticDialect>();
+        target.addLegalOp<::plier::SignCastOp>();
+        // target.addDynamicallyLegalOp<::mlir::func::ReturnOp>([&](::mlir::func::ReturnOp op) -> bool {
+        //         for (auto it : llvm::enumerate(op.operands())) {
+        //             auto i = it.index();
+        //             auto arg = it.value();
+        //             if (arg.getType().isa<::ptensor::PTensorType>()) return false;
+        //         }
+        //         return true;
+        //     });
+        // target.addLegalDialect<::mlir::func::FuncDialect>();
+
+        ::mlir::RewritePatternSet patterns(&ctxt);
+        plier::populateControlFlowTypeConversionRewritesAndTarget(typeConverter, patterns, target);
+        patterns.insert<::ptensor::ARangeLowering, ::ptensor::EWBinOpLowering>(typeConverter, &ctxt);
+
+        if(::mlir::failed(::mlir::applyPartialConversion(getOperation(), target, ::std::move(patterns)))) {
+            signalPassFailure();
+        }
+        std::cerr << "Done PTensorLoweringPass\n";
+    }
+};
+
+// *************************************************
+// *************************************************
 
 static mlir::Value index_cast(mlir::Value value, mlir::Location loc,
                               mlir::OpBuilder &builder) {
@@ -2208,10 +2338,7 @@ void PlierToLinalgPass::runOnOperation() {
                             mlir::ValueRange inputs,
                             mlir::Location loc) -> llvm::Optional<mlir::Value> {
       if (inputs.size() == 1) {
-          // FIXME PTensor: for now we simply assume we have i64 tensors
-          auto memrefType = mlir::MemRefType::get({-1}, builder.getI64Type());
-          auto x = builder.create<plier::CastOp>(loc, memrefType, inputs.front()).getResult();
-          return builder.create<mlir::UnrealizedConversionCastOp>(loc, type, x).getResult(0);
+          return builder.create<mlir::UnrealizedConversionCastOp>(loc, type, inputs.front()).getResult(0);
       }
 
     return llvm::None;
@@ -2929,9 +3056,10 @@ struct FixDeallocPlacementPass
 static void populatePlierToLinalgGenPipeline(mlir::OpPassManager &pm) {
   pm.addNestedPass<mlir::FuncOp>(std::make_unique<MarkContigiousArraysPass>());
   pm.addPass(std::make_unique<PlierToLinalgPass>());
+  pm.addPass(std::make_unique<LowerPTensorPass>());
   pm.addPass(mlir::createCanonicalizerPass());
-  pm.addPass(std::make_unique<NumpyCallsLoweringPass>());
   pm.addPass(std::make_unique<PTensorLoweringPass>());
+  pm.addPass(std::make_unique<NumpyCallsLoweringPass>());
   pm.addPass(plier::createForceInlinePass());
   pm.addPass(mlir::createSymbolDCEPass());
   pm.addNestedPass<mlir::FuncOp>(std::make_unique<PostPlierToLinalgPass>());
@@ -2996,9 +3124,9 @@ static void populatePlierToLinalgOptPipeline(mlir::OpPassManager &pm) {
 }
 } // namespace
 
-void populateArrayTypeConverter(mlir::MLIRContext & /*context*/,
-                                mlir::TypeConverter &converter) {
-  converter.addConversion(
+  void populateArrayTypeConverter(mlir::MLIRContext & /*context*/,
+                                  mlir::TypeConverter &converter) {
+    converter.addConversion(
       [&](plier::PyType type) -> llvm::Optional<mlir::Type> {
         auto ret = mapPlierType(converter, type);
         if (!ret)

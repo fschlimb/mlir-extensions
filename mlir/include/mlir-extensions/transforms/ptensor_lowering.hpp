@@ -16,28 +16,59 @@
 
 #pragma once
 
+#include "mlir-extensions/dialect/plier/dialect.hpp"
 #include "mlir-extensions/dialect/ptensor/dialect.hpp"
 
+#include <mlir/Transforms/DialectConversion.h>
 #include <mlir/IR/PatternMatch.h>
 
 namespace ptensor {
 
-    // Lowering arange to LinAlg
-    struct ARangeLowering : public mlir::OpRewritePattern<ptensor::ARangeOp> {
-        using OpRewritePattern::OpRewritePattern;
+    struct FromNumpyCall : public ::mlir::OpConversionPattern<::plier::PyCallOp>
+    {
+        using OpConversionPattern::OpConversionPattern;
 
-        mlir::LogicalResult
-        matchAndRewrite(ptensor::ARangeOp op, mlir::PatternRewriter &rewriter) const override;
+        ::mlir::LogicalResult
+              matchAndRewrite(::plier::PyCallOp op,
+                              ::plier::PyCallOp::Adaptor adaptor,
+                              ::mlir::ConversionPatternRewriter &rewriter) const override;
+    };
+
+    struct FromBinOp : public ::mlir::OpConversionPattern<::plier::BinOp>
+    {
+        using OpConversionPattern::OpConversionPattern;
+
+        ::mlir::LogicalResult
+              matchAndRewrite(::plier::BinOp op,
+                              ::plier::BinOp::Adaptor adaptor,
+                              ::mlir::ConversionPatternRewriter &rewriter) const override;
+    };
+
+    // Lowering arange to LinAlg
+    struct ARangeLowering : public ::mlir::OpConversionPattern<::ptensor::ARangeOp>
+    {
+        using OpConversionPattern::OpConversionPattern;
+
+        ::mlir::LogicalResult
+              matchAndRewrite(::ptensor::ARangeOp op,
+                              ::ptensor::ARangeOp::Adaptor adaptor,
+                              ::mlir::ConversionPatternRewriter &rewriter) const override;
     };
 
     // Lowering element-wise binary operations to LinAlg
-    struct EWBinOpLowering : public mlir::OpRewritePattern<ptensor::EWBinOp> {
-        using OpRewritePattern::OpRewritePattern;
+    struct EWBinOpLowering : public ::mlir::OpConversionPattern<::ptensor::EWBinOp>
+    {
+        using OpConversionPattern::OpConversionPattern;
 
-        mlir::LogicalResult
-        matchAndRewrite(ptensor::EWBinOp op, mlir::PatternRewriter &rewriter) const override;
+        ::mlir::LogicalResult
+              matchAndRewrite(::ptensor::EWBinOp op,
+                              ::ptensor::EWBinOp::Adaptor adaptor,
+                              ::mlir::ConversionPatternRewriter &rewriter) const override;
 
-        static mlir::Type getEWBinOpRType(mlir::PatternRewriter &rewriter, EWBinOpId op, const mlir::Type & lhsType, const mlir::Type & rhsType);
+        static ::mlir::Type getEWBinOpRType(::mlir::ConversionPatternRewriter &rewriter,
+                                            EWBinOpId op,
+                                            const ::mlir::Type & lhsType,
+                                            const ::mlir::Type & rhsType);
     };
 
 } // namespace ptensor

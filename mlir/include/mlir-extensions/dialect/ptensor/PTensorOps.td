@@ -16,6 +16,7 @@
 #define _PTENSOR_OPS_INCLUDED_
 
 include "mlir/IR/OpBase.td"
+include "mlir/IR/AttrTypeBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 // Provide a definition of the 'PTensor' dialect in the ODS framework so that we
@@ -38,6 +39,21 @@ def PTensor_Dialect : Dialect {
     let cppNamespace = "::ptensor";
 }
 
+class PTensor_Type<string name, string typeMnemonic, list<Trait> traits = []>
+    : TypeDef<PTensor_Dialect, name, traits> {
+    let mnemonic = typeMnemonic;
+}
+    
+def PTensor_PTensor : PTensor_Type<"PTensor", "ptensor">
+{
+  let summary = "RankedTensor, optionally distributed";
+  // Here we defined the underlying RankedTensor and whether the tensor is distributed
+  let parameters = (ins "::mlir::RankedTensorType":$rtensor, "bool":$dist);
+
+  let assemblyFormat = "`<` $rtensor`,` $dist `>`";
+}
+
+
 // Base class for dialect operations. This operation inherits from the base
 // `Op` class in OpBase.td, and provides:
 //   * The parent dialect of the operation.
@@ -52,21 +68,20 @@ def ARangeOp : PTensor_Op<"arange", [NoSideEffect]> {
     let arguments = (ins AnyType : $start, AnyType : $stop, AnyType : $step, BoolAttr : $dist);
 
     // result is a tensor
-    let results = (outs AnyType);
+    let results = (outs PTensor_PTensor);
 
     // Trivial builder
-    let builders = [OpBuilder<(ins "::mlir::Value" : $start, "::mlir::Value" : $stop, "::mlir::Value" : $step, "bool" : $dist)>];
+    // let builders = [OpBuilder<(ins "::mlir::Value" : $start, "::mlir::Value" : $stop, "::mlir::Value" : $step, "bool" : $dist)>];
 }
 
 def EWBinOp : PTensor_Op<"ewbin", [NoSideEffect]> {
     // arange takes 3 integer attributes (for now): start, stop and step
-    let arguments = (ins AnyAttr: $op, AnyType : $lhs, AnyType : $rhs, BoolAttr : $dist);
+    let arguments = (ins AnyAttr: $op, PTensor_PTensor : $lhs, PTensor_PTensor : $rhs);
 
     // result is a tensor
-    let results = (outs AnyType);
-    
+    let results = (outs PTensor_PTensor);
     // Trivial builder
-    let builders = [OpBuilder<(ins  "::ptensor::EWBinOpId" : $op, "::mlir::Value" : $lhs, "::mlir::Value" : $rhs, "bool" : $dist)>];
+    // let builders = [OpBuilder<(ins  "::mlir::Type" : $resultType, "::ptensor::EWBinOpId" : $op, Value : $lhs, Value : $rhs)>];
 }
 
 #endif // _PTENSOR_OPS_INCLUDED_

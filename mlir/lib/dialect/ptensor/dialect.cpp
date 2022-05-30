@@ -12,34 +12,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "mlir-extensions/dialect/ptensor/dialect.hpp"
+#include <mlir-extensions/dialect/ptensor/dialect.hpp>
+#include <llvm/ADT/TypeSwitch.h>
+#include <mlir/IR/DialectImplementation.h>
 
 namespace ptensor {
 
     void PTensorDialect::initialize()
     {
+        addTypes<
+#define GET_TYPEDEF_LIST
+#include "mlir-extensions/dialect/ptensor/PTensorOpsTypes.cpp.inc"
+            >();
         addOperations<
 #define GET_OP_LIST
 #include "mlir-extensions/dialect/ptensor/PTensorOps.cpp.inc"
             >();
     }
     
-    void ARangeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state, ::mlir::Value start, ::mlir::Value stop, ::mlir::Value step, bool dist)
-    {
-        auto dataType = ::mlir::RankedTensorType::get({-1}, builder.getI64Type());
-        ARangeOp::build(builder, state, dataType, start, stop, step, dist);
-    }
+    // void ARangeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state, ::mlir::Value start, ::mlir::Value stop, ::mlir::Value step, bool dist)
+    // {
+    //     auto dataType = ::mlir::RankedTensorType::get({-1}, builder.getI64Type());
+    //     ARangeOp::build(builder, state, dataType, start, stop, step, dist);
+    // }
 
-    void EWBinOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state, ::ptensor::EWBinOpId op, ::mlir::Value lhs, ::mlir::Value rhs, bool dist)
-    {
-        //auto dataType = lhs.getType().dyn_cast<::mlir::RankedTensorType>();
-        //assert(dataType);
-        auto dataType = ::mlir::RankedTensorType::get({-1}, builder.getI64Type());
-        EWBinOp::build(builder, state, dataType, builder.getI32IntegerAttr(op), lhs, rhs, dist);
-    }
+    // void EWBinOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
+    //                     ::mlir::Type rtyp, ::ptensor::EWBinOpId op, ::ptensor::PTensorType lhs, ::ptensor::PTensorType rhs)
+    // {
+    //     EWBinOp::build(builder, state, rtyp, builder.getI32IntegerAttr(op), lhs, rhs, dist);
+    // }
 } // namespace ptensor
 
 #include "mlir-extensions/dialect/ptensor/PTensorOpsDialect.cpp.inc"
-
+#define GET_TYPEDEF_CLASSES
+#include "mlir-extensions/dialect/ptensor/PTensorOpsTypes.cpp.inc"
 #define GET_OP_CLASSES
 #include "mlir-extensions/dialect/ptensor/PTensorOps.cpp.inc"
