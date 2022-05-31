@@ -2050,7 +2050,7 @@ struct GenerateToFill
                   mlir::PatternRewriter &rewriter) const override {
     auto &body = op.body();
     if (!llvm::hasSingleElement(body))
-      return mlir::failure();
+        return mlir::failure();
 
     auto &block = body.getBlocks().front();
     if (!llvm::hasSingleElement(block))
