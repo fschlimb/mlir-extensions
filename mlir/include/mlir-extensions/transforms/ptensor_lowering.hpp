@@ -24,6 +24,7 @@
 
 namespace ptensor {
 
+    // Convert Plier's numpy calls to PTensor ops
     struct FromNumpyCall : public ::mlir::OpConversionPattern<::plier::PyCallOp>
     {
         using OpConversionPattern::OpConversionPattern;
@@ -34,6 +35,7 @@ namespace ptensor {
                               ::mlir::ConversionPatternRewriter &rewriter) const override;
     };
 
+    // Convert Plier's binary operations to PTensor binops
     struct FromBinOp : public ::mlir::OpConversionPattern<::plier::BinOp>
     {
         using OpConversionPattern::OpConversionPattern;
@@ -44,7 +46,7 @@ namespace ptensor {
                               ::mlir::ConversionPatternRewriter &rewriter) const override;
     };
 
-    // Lowering arange to LinAlg
+    // Convert PTensor's arange to Linalg
     struct ARangeLowering : public ::mlir::OpConversionPattern<::ptensor::ARangeOp>
     {
         using OpConversionPattern::OpConversionPattern;
@@ -55,7 +57,7 @@ namespace ptensor {
                               ::mlir::ConversionPatternRewriter &rewriter) const override;
     };
 
-    // Lowering element-wise binary operations to LinAlg
+    // Convert PTensor's elementwise binary operations to Linalg
     struct EWBinOpLowering : public ::mlir::OpConversionPattern<::ptensor::EWBinOp>
     {
         using OpConversionPattern::OpConversionPattern;
@@ -64,11 +66,6 @@ namespace ptensor {
               matchAndRewrite(::ptensor::EWBinOp op,
                               ::ptensor::EWBinOp::Adaptor adaptor,
                               ::mlir::ConversionPatternRewriter &rewriter) const override;
-
-        static ::mlir::Type getEWBinOpRType(::mlir::ConversionPatternRewriter &rewriter,
-                                            EWBinOpId op,
-                                            const ::mlir::Type & lhsType,
-                                            const ::mlir::Type & rhsType);
     };
 
 } // namespace ptensor

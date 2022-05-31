@@ -22,6 +22,8 @@
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 
+// return type without a sign
+// copied from plier_to_linalg
 static ::mlir::Type makeSignlessType(::mlir::Type type)
 {
     if (auto shaped = type.dyn_cast<mlir::ShapedType>()) {
@@ -35,101 +37,8 @@ static ::mlir::Type makeSignlessType(::mlir::Type type)
     return type;
 }
 
-enum class ArrayLayout { C, F, A };
-
-static bool parseLayout(llvm::StringRef &name, ArrayLayout &layout) {
-  if (name.consume_back("C")) {
-    layout = ArrayLayout::C;
-    return true;
-  }
-  if (name.consume_back("F")) {
-    layout = ArrayLayout::F;
-    return true;
-  }
-  if (name.consume_back("A")) {
-    layout = ArrayLayout::A;
-    return true;
-  }
-  return false;
-}
-
-template <typename T>
-static bool consumeIntBack(llvm::StringRef &name, T &result) {
-  unsigned len = 0;
-  auto tmp_name = name;
-  while (!tmp_name.empty() && std::isdigit(tmp_name.back())) {
-    ++len;
-    tmp_name = tmp_name.drop_back();
-  }
-  tmp_name = name.substr(name.size() - len);
-  if (!tmp_name.consumeInteger<T>(10, result)) {
-    name = name.substr(0, name.size() - len);
-    return true;
-  }
-  return false;
-}
-
-struct ArrayDesc {
-  unsigned dims = 0;
-  ArrayLayout layout = {};
-  llvm::StringRef name;
-};
-
-static llvm::Optional<ArrayDesc> parseArrayDesc(llvm::StringRef &name) {
-  unsigned num_dims = 0;
-  ArrayLayout layout = {};
-  if (name.consume_front("array(") && name.consume_back(")") &&
-      parseLayout(name, layout) && name.consume_back(", ") &&
-      name.consume_back("d") && consumeIntBack(name, num_dims) &&
-      name.consume_back(", ") && !name.empty()) {
-    return ArrayDesc{num_dims, layout, name};
-  }
-  return {};
-}
-
-// Convert a scalar type (string) from Plier to MLIR type
-// return ::mlir::NoneType if unsupported
-static mlir::Type getScalarType(mlir::Builder & b, const llvm::StringRef & name)
-{
-    if(name == "bool") return b.getIntegerType(1);
-    if(name == "int8") return b.getIntegerType(8); //, true);
-    if(name == "int16") return b.getIntegerType(16); //, true);
-    if(name == "int32") return b.getIntegerType(32); //, true);
-    if(name == "int64") return b.getIntegerType(64); //, true);
-    
-    if(name == "uint8") return b.getIntegerType(8, false);
-    if(name == "uint16") return b.getIntegerType(16, false);
-    if(name == "uint32") return b.getIntegerType(32, false);
-    if(name == "uint64") return b.getIntegerType(64, false);
-    
-    // if(name == "int8_signless") return b.getIntegerType(8);
-    // if(name == "int16_signless") return b.getIntegerType(16);
-    // if(name == "int32_signless") return b.getIntegerType(32);
-    // if(name == "int64_signless") return b.getIntegerType(64);
-    // if(name == "index") return b.getIndexType();
-    
-    if(name == "float16") return b.getF16Type();
-    if(name == "float32") return b.getF32Type();
-    if(name == "float64") return b.getF64Type();
-
-    return ::mlir::NoneType::get(b.getContext());;
-}
-
-// Convert any type (string) from Plier to MLIR type
-// return ::mlir::NoneType if unsupported
-static ::mlir::Type getType(mlir::Builder & b, const ::mlir::Type & t)
-{
-    auto typ = t.dyn_cast<plier::PyType>();
-    auto nm = typ.getName();
-    auto desc = parseArrayDesc(nm);
-    if(desc) {
-        auto styp = getScalarType(b, desc->name);
-        llvm::SmallVector<int64_t> shp(desc->dims, ::mlir::ShapedType::kDynamicSize);
-        return ::ptensor::PTensorType::get(b.getContext(), ::mlir::RankedTensorType::get(shp, styp), true);
-    }
-    return getScalarType(b, nm);
-}
-
+// convert numpy calls and their return types from Plier to PTensor
+// as we use a type converter, operands are provided as converted types in adaptor
 mlir::LogicalResult
 ptensor::FromNumpyCall::matchAndRewrite(::plier::PyCallOp op,
                                         ::plier::PyCallOp::Adaptor adaptor,
@@ -137,42 +46,52 @@ ptensor::FromNumpyCall::matchAndRewrite(::plier::PyCallOp op,
 {
     auto converter = *getTypeConverter();
     auto name = adaptor.func_name();
-    //    auto rtyp = getType(rewriter, op.getType());
+    // convert return type
     auto rtyp = converter.convertType(op.getType());
+    // get auto-converted args/operands
     auto args = adaptor.args();
 
+    // currently we support arange only
     if(name == "numpy.arange") {
-        rewriter.replaceOpWithNewOp<::ptensor::ARangeOp>(op, rtyp, args[0], args[1], args[2], true);
+        (void)rewriter.replaceOpWithNewOp<::ptensor::ARangeOp>(op, rtyp, args[0], args[1], args[2], true);
         return ::mlir::success();
     }
     return ::mlir::failure();
 };
 
+// convert binary operations their return types from Plier binary to PTensor
+// as we use a type converter, operands are provided as converted types in adaptor
 mlir::LogicalResult
 ptensor::FromBinOp::matchAndRewrite(::plier::BinOp op,
                                     ::plier::BinOp::Adaptor adaptor,
                                     ::mlir::ConversionPatternRewriter &rewriter) const
 {
     auto converter = *getTypeConverter();
+    // get auto-converted operands
     auto lhs = adaptor.lhs();
     auto rhs = adaptor.rhs();
 
     auto lhstyp = lhs.getType().dyn_cast<::ptensor::PTensorType>();
     auto rhstyp = rhs.getType().dyn_cast<::ptensor::PTensorType>();
+    // we expect PTensorTypes as operands
     if(lhstyp && rhstyp) {
         auto name = adaptor.op();
         auto rtyp = converter.convertType(op.getType());
         if(name == "+") {
-            rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, rtyp, rewriter.getI32IntegerAttr(::ptensor::ADD), lhs, rhs);
+            (void)rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, rtyp, rewriter.getI32IntegerAttr(::ptensor::ADD), lhs, rhs);
             return ::mlir::success();
         } else if(name == "*") {
-            rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, rtyp, rewriter.getI32IntegerAttr(::ptensor::MULTIPLY), lhs, rhs);
+            (void)rewriter.replaceOpWithNewOp<::ptensor::EWBinOp>(op, rtyp, rewriter.getI32IntegerAttr(::ptensor::MULTIPLY), lhs, rhs);
             return ::mlir::success();
         }
     }
+    // fail if not PTensorType operands or unsupported op
+    // will be retried if operands gets converted elsewhere
     return ::mlir::failure();
 };
 
+// convert PTensor's arange and its return type to Linalg/tensor
+// we also need some arith and affine (for linalg::genericop)
 mlir::LogicalResult
 ptensor::ARangeLowering::matchAndRewrite(::ptensor::ARangeOp op,
                                          ::ptensor::ARangeOp::Adaptor adaptor,
@@ -186,6 +105,7 @@ ptensor::ARangeLowering::matchAndRewrite(::ptensor::ARangeOp op,
     auto stop = adaptor.stop();
     auto step = adaptor.step();
 
+    // we operator on signless integers
     auto ityp = rewriter.getI64Type();
     if (start.getType() != ityp) {
         start = rewriter.create<plier::SignCastOp>(loc, ityp, start);
@@ -238,71 +158,19 @@ ptensor::ARangeLowering::matchAndRewrite(::ptensor::ARangeOp op,
         auto val = builder.create<mlir::arith::AddIOp>(loc, start, tmp);
         auto ret = builder.create<plier::SignCastOp>(loc, typ, val);
         // auto _val = builder.create<mlir::arith::SIToFPOp>(loc, typ, val);
-        builder.create<mlir::linalg::YieldOp>(loc, ret.getResult());
+        (void)builder.create<mlir::linalg::YieldOp>(loc, ret.getResult());
     };
 
-    auto x = rewriter.replaceOpWithNewOp<mlir::linalg::GenericOp>(op, ttyp, llvm::None, _tnsr.getResult(), maps, iterators, body);
-    x.dump();
-    std::cerr << "_Yey\n";
+    (void)rewriter.replaceOpWithNewOp<mlir::linalg::GenericOp>(op, ttyp, llvm::None, _tnsr.getResult(), maps, iterators, body);
     return ::mlir::success();
 }
 
-template<typename OP, typename RTYPE>
-struct EWBinOpAttr
-{
-    using opType = OP;
-    using rType = RTYPE;
-};
-
-// Return a lowered op
-mlir::Type ptensor::EWBinOpLowering::getEWBinOpRType(::mlir::ConversionPatternRewriter &rewriter,
-                                                     ::ptensor::EWBinOpId op,
-                                                     const ::mlir::Type & lhsType,
-                                                     const ::mlir::Type & rhsType)
-{
-    switch(op) {
-    case ADD:
-    case ATAN2:
-    case FLOOR_DIVIDE:
-    case LOGADDEXP:
-    case LSHIFT:
-    case MATMUL:
-    case MOD:
-    case MULTIPLY:
-    case POW:
-    case SUBTRACT:
-    case TRUE_DIVIDE:
-    case BITWISE_AND:
-    case BITWISE_LEFT_SHIFT:
-    case BITWISE_OR:
-    case BITWISE_RIGHT_SHIFT:
-    case BITWISE_XOR: {
-        auto rtt = lhsType.dyn_cast<mlir::RankedTensorType>();
-        assert(rtt && rtt.getElementType().isIntOrIndex());
-        return rtt.getElementType();
-    }
-
-    case EQUAL:
-    case GREATER:
-    case GREATER_EQUAL:
-    case LESS:
-    case LESS_EQUAL:
-    case LOGICAL_AND:
-    case LOGICAL_OR:
-    case LOGICAL_XOR:
-    case NOT_EQUAL:
-        return rewriter.getI1Type();
-    default:
-        assert(nullptr == "unknown binary operation");
-    };
-}
 
 // function type for building body for linalg::generic
 using BodyType = std::function<void(mlir::OpBuilder &builder, ::mlir::Location loc, ::mlir::ValueRange args)>;
-// array of body functions, for each binop one
-//static std::array<BodyType*, ptensor::EWBINOPID_LAST> bodies;
 
-// any body needs to close with a yield
+// any genericOp body needs to close with a yield
+// we also add a cast op to "typ" if needed
 template<typename T>
 static void yield(mlir::OpBuilder &builder, ::mlir::Location loc, ::mlir::Type typ, T op)
 {
@@ -310,9 +178,12 @@ static void yield(mlir::OpBuilder &builder, ::mlir::Location loc, ::mlir::Type t
     if(typ != res.getType()) {
         res = builder.create<plier::SignCastOp>(loc, typ, op).getResult();
     }
-    builder.create<mlir::linalg::YieldOp>(loc, res);
+    (void)builder.create<mlir::linalg::YieldOp>(loc, res);
 }
 
+// trivial builders have simple arith equivalents
+// the arith ops are template arguments
+// currently only integers are supported.
 template<typename IOP>
 static BodyType buildTrivial(::mlir::Type typ)
 {
@@ -325,7 +196,7 @@ static BodyType buildTrivial(::mlir::Type typ)
     };
 }
 
-// initialize array of builder functions
+// get a body builder for giben binary operation and result type
 static BodyType getBodyBuilder(::ptensor::EWBinOpId bop, ::mlir::Type typ)
 {
     switch(bop) {
@@ -366,21 +237,25 @@ static BodyType getBodyBuilder(::ptensor::EWBinOpId bop, ::mlir::Type typ)
 }
 
 
+// convert PTensor's elementwise binary operations and their return type to Linalg/tensor
+// we also need some arith and affine (for linalg::genericop)
 mlir::LogicalResult
 ptensor::EWBinOpLowering::matchAndRewrite(::ptensor::EWBinOp op,
                                           ::ptensor::EWBinOp::Adaptor adaptor,
                                           ::mlir::ConversionPatternRewriter &rewriter) const
 {
+    // we expect RankedTensorType as operands
     auto lhstyp = adaptor.lhs().getType().dyn_cast<::mlir::RankedTensorType>();
     auto rhstyp = adaptor.rhs().getType().dyn_cast<::mlir::RankedTensorType>();
-
     if(!lhstyp || !rhstyp) {
+        // fail if not, will be retired if operands get converted elsewhere
         return ::mlir::failure();
     }
 
     auto loc = op.getLoc();
     auto converter = *getTypeConverter();
 
+    // lambda for creating operand cast to signless if needed
     auto slcast = [&loc, &rewriter](auto o, auto ttyp) {
         auto etyp = ttyp.getElementType();
         if(etyp.isIntOrIndex() && !etyp.isSignlessInteger()) {
@@ -390,7 +265,7 @@ ptensor::EWBinOpLowering::matchAndRewrite(::ptensor::EWBinOp op,
         return o;
     };
 
-    // Get operands into vec
+    // Get signless operands into vec
     llvm::SmallVector<mlir::Value, 2> oprnds(2);
     oprnds[0] = slcast(adaptor.lhs(), lhstyp);
     oprnds[1] = slcast(adaptor.rhs(), rhstyp);
@@ -424,7 +299,6 @@ ptensor::EWBinOpLowering::matchAndRewrite(::ptensor::EWBinOp op,
     // create binop as linalg::generic
     const auto bopid = (::ptensor::EWBinOpId)adaptor.op().cast<::mlir::IntegerAttr>().getInt();
     auto bodyBuilder = getBodyBuilder(bopid, typ);
-    auto x = rewriter.replaceOpWithNewOp<::mlir::linalg::GenericOp>(op, tnsr.getType(), oprnds, tnsr.getResult(), maps, iterators, bodyBuilder).getResult(0);
-    x.dump();
+    (void)rewriter.replaceOpWithNewOp<::mlir::linalg::GenericOp>(op, tnsr.getType(), oprnds, tnsr.getResult(), maps, iterators, bodyBuilder).getResult(0);
     return ::mlir::success();
 }
