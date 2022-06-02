@@ -29,18 +29,7 @@ namespace ptensor {
 #include "mlir-extensions/dialect/ptensor/PTensorOps.cpp.inc"
             >();
     }
-    
-    // void ARangeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state, ::mlir::Value start, ::mlir::Value stop, ::mlir::Value step, bool dist)
-    // {
-    //     auto dataType = ::mlir::RankedTensorType::get({-1}, builder.getI64Type());
-    //     ARangeOp::build(builder, state, dataType, start, stop, step, dist);
-    // }
 
-    // void EWBinOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-    //                     ::mlir::Type rtyp, ::ptensor::EWBinOpId op, ::ptensor::PTensorType lhs, ::ptensor::PTensorType rhs)
-    // {
-    //     EWBinOp::build(builder, state, rtyp, builder.getI32IntegerAttr(op), lhs, rhs, dist);
-    // }
 } // namespace ptensor
 
 #include "mlir-extensions/dialect/ptensor/PTensorOpsDialect.cpp.inc"

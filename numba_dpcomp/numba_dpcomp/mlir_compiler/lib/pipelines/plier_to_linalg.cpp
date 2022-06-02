@@ -628,6 +628,7 @@ struct PlierToPTensorPass
       target.addDynamicallyLegalOp<::plier::PyCallOp>([&](::plier::PyCallOp op) -> bool {
               auto name = op.func_name();
               if(name == "numpy.arange") return false;
+              if(name == "numpy.sum") return false;
               return true;
           });
       // For now we only convert arange and (some) binops
@@ -644,7 +645,7 @@ struct PlierToPTensorPass
       // Convert plier arrays to PTensorType
       populateArrayTypeConverter(ctxt, typeConverter);
 
-#if 0
+#if 1
       // In theory we should not need any materialization
       // if we use a hybrid conversion (plier->ptensor->linalg and direct plier->linalg) we might need it, though
       auto materializeCast = [](::mlir::OpBuilder &builder, ::mlir::Type type,
@@ -653,7 +654,6 @@ struct PlierToPTensorPass
           if (inputs.size() == 1) {
               return builder.create<::mlir::UnrealizedConversionCastOp>(loc, type, inputs.front()).getResult(0);
           }
-          
           return ::llvm::None;
       };
       //typeConverter.addArgumentMaterialization(materializeCast);
@@ -701,8 +701,21 @@ struct PTensorToLinalgPass
                 return type.getRtensor();
         });
         
+#if 1
         // In theory we should not need any materialization
-
+        // if we use a hybrid conversion (plier->ptensor->linalg and direct plier->linalg) we might need it, though
+        auto materializeCast = [](::mlir::OpBuilder &builder, ::mlir::Type type,
+                                  ::mlir::ValueRange inputs,
+                                  ::mlir::Location loc) -> ::llvm::Optional<::mlir::Value> {
+            if (inputs.size() == 1) {
+                return builder.create<::mlir::UnrealizedConversionCastOp>(loc, type, inputs.front()).getResult(0);
+            }
+            return ::llvm::None;
+        };
+        //typeConverter.addArgumentMaterialization(materializeCast);
+        typeConverter.addSourceMaterialization(materializeCast);
+        //typeConverter.addTargetMaterialization(materializeCast);
+#endif
         // We convert all PTensor stuff...
         target.addIllegalDialect<::ptensor::PTensorDialect>();
         // ...into Linalg, Affine, Tensor, Arith
@@ -716,7 +729,7 @@ struct PTensorToLinalgPass
         ::mlir::RewritePatternSet patterns(&ctxt);
         // add rewrites/conversions for return types/ops and other control flow stuff
         plier::populateControlFlowTypeConversionRewritesAndTarget(typeConverter, patterns, target);
-        patterns.insert<::ptensor::ARangeLowering, ::ptensor::EWBinOpLowering>(typeConverter, &ctxt);
+        patterns.insert<::ptensor::ARangeLowering, ::ptensor::EWBinOpLowering, ::ptensor::ReductionOpLowering>(typeConverter, &ctxt);
 
         if(::mlir::failed(::mlir::applyPartialConversion(getOperation(), target, ::std::move(patterns)))) {
             signalPassFailure();

@@ -68,4 +68,15 @@ namespace ptensor {
                               ::mlir::ConversionPatternRewriter &rewriter) const override;
     };
 
+    // Convert PTensor's reduction operations to Linalg
+    struct ReductionOpLowering : public ::mlir::OpConversionPattern<::ptensor::ReductionOp>
+    {
+        using OpConversionPattern::OpConversionPattern;
+
+        ::mlir::LogicalResult
+              matchAndRewrite(::ptensor::ReductionOp op,
+                              ::ptensor::ReductionOp::Adaptor adaptor,
+                              ::mlir::ConversionPatternRewriter &rewriter) const override;
+    };
+
 } // namespace ptensor

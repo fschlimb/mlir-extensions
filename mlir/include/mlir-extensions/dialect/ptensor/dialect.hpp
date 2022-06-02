@@ -44,16 +44,30 @@ enum EWBinOpId : int {
     LOGICAL_XOR,
     LSHIFT,
     MATMUL,
-    MOD,
+    MAXIMUM,
+    MINIMUM,
+    MODULO,
     MULTIPLY,
     NOT_EQUAL,
     OR,
-    POW,
+    POWER,
     SUBTRACT,
     TRUE_DIVIDE,
     XOR,
     EWBINOPID_LAST
 };
+
+enum ReduceOpId : int {
+    MAX,
+    MEAN,
+    MIN,
+    PROD,
+    SUM,
+    STD,
+    VAR,
+    REDUCEOPID_LAST
+};
+
 }
 
 #include <mlir-extensions/dialect/ptensor/PTensorOpsDialect.h.inc>

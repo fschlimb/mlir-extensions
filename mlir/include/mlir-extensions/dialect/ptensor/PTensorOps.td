@@ -64,7 +64,7 @@ class PTensor_Op<string mnemonic, list<Trait> traits = []> :
 
 
 def ARangeOp : PTensor_Op<"arange", [NoSideEffect]> {
-    // arange takes 3 integer attributes (for now): start, stop and step
+    // arange takes 3 integer operands (for now): start, stop and step
     let arguments = (ins AnyType : $start, AnyType : $stop, AnyType : $step, BoolAttr : $dist);
 
     // result is a tensor
@@ -75,8 +75,18 @@ def ARangeOp : PTensor_Op<"arange", [NoSideEffect]> {
 }
 
 def EWBinOp : PTensor_Op<"ewbin", [NoSideEffect]> {
-    // arange takes 3 integer attributes (for now): start, stop and step
+    // arange takes 2 PTensorType operands: lhs and rhs
     let arguments = (ins AnyAttr: $op, PTensor_PTensor : $lhs, PTensor_PTensor : $rhs);
+
+    // result is a tensor
+    let results = (outs PTensor_PTensor);
+    // Trivial builder
+    // let builders = [OpBuilder<(ins  "::mlir::Type" : $resultType, "::ptensor::EWBinOpId" : $op, Value : $lhs, Value : $rhs)>];
+}
+
+def ReductionOp : PTensor_Op<"reduction", [NoSideEffect]> {
+    // reduction takes 1 operand (PTensorType) and one attribute (reduction operation)
+    let arguments = (ins AnyAttr: $op, PTensor_PTensor : $input);
 
     // result is a tensor
     let results = (outs PTensor_PTensor);
