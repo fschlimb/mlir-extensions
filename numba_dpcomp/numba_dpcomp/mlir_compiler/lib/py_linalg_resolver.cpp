@@ -22,6 +22,7 @@
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/SCF.h>
+#include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -29,10 +30,10 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/Parser/Parser.h>
 
-#include "mlir-extensions/dialect/plier/dialect.hpp"
-#include "mlir-extensions/dialect/plier_util/dialect.hpp"
-#include "mlir-extensions/transforms/const_utils.hpp"
-#include "mlir-extensions/transforms/func_utils.hpp"
+#include "mlir-extensions/Dialect/plier/dialect.hpp"
+#include "mlir-extensions/Dialect/plier_util/dialect.hpp"
+#include "mlir-extensions/Transforms/const_utils.hpp"
+#include "mlir-extensions/Transforms/func_utils.hpp"
 #include "mlir-extensions/utils.hpp"
 #include "py_map_types.hpp"
 
@@ -283,10 +284,10 @@ struct PyLinalgResolver::Context {
                 py::cpp_function(&printTypeCapsule));
   }
 
-  mlir::FuncOp compileBody(py::handle body, py::list arg_types) {
+  mlir::func::FuncOp compileBody(py::handle body, py::list arg_types) {
     auto func = compileFunc(body, arg_types).cast<py::capsule>();
     auto mlirFunc =
-        mlir::cast<mlir::FuncOp>(static_cast<mlir::Operation *>(func));
+        mlir::cast<mlir::func::FuncOp>(static_cast<mlir::Operation *>(func));
     mlirFunc.setPrivate();
     mlirFunc->setAttr(plier::attributes::getForceInlineName(),
                       mlir::UnitAttr::get(mlirFunc->getContext()));
@@ -928,7 +929,7 @@ static py::object genericImpl(py::capsule context, py::handle inputs,
   auto affineMaps = getAffineMaps(maps, mlirContext);
   auto bodyBuilder = [&](mlir::OpBuilder &builder, mlir::Location loc,
                          mlir::ValueRange args) {
-    auto funcType = bodyFunc.getType();
+    auto funcType = bodyFunc.getFunctionType();
     auto newArgs = castValues(doSignCast(builder, loc, args, bodyTypes),
                               funcType.getInputs());
     auto call = builder.create<mlir::func::CallOp>(loc, bodyFunc, newArgs);
@@ -1222,9 +1223,9 @@ static py::object externalCallImpl(py::capsule context, py::str funcName,
     auto mod =
         builder.getBlock()->getParentOp()->getParentOfType<mlir::ModuleOp>();
     assert(mod);
-    auto f = mod.lookupSymbol<mlir::FuncOp>(name);
+    auto f = mod.lookupSymbol<mlir::func::FuncOp>(name);
     if (f) {
-      if (f.getType() != funcType) {
+      if (f.getFunctionType() != funcType) {
         plier::reportError(llvm::Twine("linalg_builder::external_call: "
                                        "invalid function redefinition: ") +
                            name);
@@ -1335,7 +1336,7 @@ static py::object inlineFuncImpl(py::capsule context, py::handle func,
   auto funcTypes =
       mapTypesToNumbaChecked(ctx.context.typesMod, getTypes(argsValues));
   auto bodyFunc = ctx.context.compileBody(func, funcTypes);
-  auto funcType = bodyFunc.getType();
+  auto funcType = bodyFunc.getFunctionType();
   auto funcArgsTypes = funcType.getInputs();
   if (funcArgsTypes.size() != argsValues.size())
     plier::reportError(
@@ -1912,10 +1913,10 @@ PyLinalgResolver::rewrite(llvm::StringRef name, mlir::Location loc,
 
   PyBuilderContext pyBuilderContext{loc, builder, *context};
   auto pyContext = py::capsule(&pyBuilderContext);
-  auto pyArgs = getArgs(
-      context->inspect, builderFunc,
-      [&](auto val) { return context->createVar(pyContext, val); }, args,
-      kwargs);
+  auto pyArgs =
+      getArgs(context->inspect, builderFunc,
+              [&](auto val) { return context->createVar(pyContext, val); },
+              args, kwargs);
   if (pyArgs.is_none())
     return {};
 

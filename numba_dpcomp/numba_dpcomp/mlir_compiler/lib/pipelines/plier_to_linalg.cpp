@@ -15,8 +15,7 @@
 #include <iostream>
 
 #include "pipelines/plier_to_linalg.hpp"
-
-#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
+#include <mlir/Conversion/AffineToStandard/AffineToStandard.h>
 #include <mlir/Analysis/BufferViewFlowAnalysis.h>
 #include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h>
@@ -44,34 +43,35 @@
 #include <mlir/Transforms/DialectConversion.h>
 #include <mlir/Transforms/GreedyPatternRewriteDriver.h>
 #include <mlir/Transforms/Passes.h>
+#include <mlir/Transforms/LoopInvariantCodeMotionUtils.h>
 
-#include "mlir-extensions/dialect/plier/dialect.hpp"
-#include "mlir-extensions/dialect/plier_util/dialect.hpp"
+#include "mlir-extensions/Dialect/plier/dialect.hpp"
+#include "mlir-extensions/Dialect/plier_util/dialect.hpp"
 
-#include "mlir-extensions/dialect/ptensor/dialect.hpp"
+#include "mlir-extensions/Dialect/ptensor/dialect.hpp"
 
 #include "pipelines/plier_to_scf.hpp"
 #include "pipelines/plier_to_std.hpp"
 #include "pipelines/pre_low_simplifications.hpp"
 
 #include "mlir-extensions/Conversion/SCFToAffine/SCFToAffine.h"
-#include "mlir-extensions/transforms/call_lowering.hpp"
-#include "mlir-extensions/transforms/ptensor_lowering.hpp"
-#include "mlir-extensions/transforms/canonicalize_reductions.hpp"
-#include "mlir-extensions/transforms/cast_utils.hpp"
-#include "mlir-extensions/transforms/common_opts.hpp"
-#include "mlir-extensions/transforms/const_utils.hpp"
-#include "mlir-extensions/transforms/cse.hpp"
-#include "mlir-extensions/transforms/inline_utils.hpp"
-#include "mlir-extensions/transforms/loop_rewrites.hpp"
-#include "mlir-extensions/transforms/loop_utils.hpp"
-#include "mlir-extensions/transforms/memory_rewrites.hpp"
-#include "mlir-extensions/transforms/pipeline_utils.hpp"
-#include "mlir-extensions/transforms/promote_bool_memref.hpp"
-#include "mlir-extensions/transforms/promote_to_parallel.hpp"
-#include "mlir-extensions/transforms/rewrite_wrapper.hpp"
-#include "mlir-extensions/transforms/type_conversion.hpp"
-#include "mlir-extensions/transforms/uplift_math.hpp"
+#include "mlir-extensions/Transforms/call_lowering.hpp"
+#include "mlir-extensions/Transforms/ptensor_lowering.hpp"
+#include "mlir-extensions/Transforms/canonicalize_reductions.hpp"
+#include "mlir-extensions/Transforms/cast_utils.hpp"
+#include "mlir-extensions/Transforms/common_opts.hpp"
+#include "mlir-extensions/Transforms/const_utils.hpp"
+#include "mlir-extensions/Transforms/cse.hpp"
+#include "mlir-extensions/Transforms/inline_utils.hpp"
+#include "mlir-extensions/Transforms/loop_rewrites.hpp"
+#include "mlir-extensions/Transforms/loop_utils.hpp"
+#include "mlir-extensions/Transforms/memory_rewrites.hpp"
+#include "mlir-extensions/Transforms/pipeline_utils.hpp"
+#include "mlir-extensions/Transforms/promote_bool_memref.hpp"
+#include "mlir-extensions/Transforms/promote_to_parallel.hpp"
+#include "mlir-extensions/Transforms/rewrite_wrapper.hpp"
+#include "mlir-extensions/Transforms/type_conversion.hpp"
+#include "mlir-extensions/Transforms/uplift_math.hpp"
 
 #include "base_pipeline.hpp"
 #include "loop_utils.hpp"
@@ -99,9 +99,9 @@ static int64_t getOptLevel(mlir::Operation *op) {
 }
 
 static mlir::LogicalResult applyOptimizations(
-    mlir::FuncOp op, const mlir::FrozenRewritePatternSet &patterns,
+    mlir::func::FuncOp op, const mlir::FrozenRewritePatternSet &patterns,
     mlir::AnalysisManager am,
-    llvm::function_ref<mlir::LogicalResult(mlir::FuncOp)> additionalOpts =
+    llvm::function_ref<mlir::LogicalResult(mlir::func::FuncOp)> additionalOpts =
         nullptr) {
   bool repeat = false;
   do {
@@ -225,7 +225,7 @@ static mlir::Value skipCasts(mlir::Value val) {
     if (!cast)
       return {};
 
-    auto inputs = cast.inputs();
+    auto inputs = cast.getInputs();
     if (inputs.size() != 1)
       return {};
 
@@ -438,7 +438,7 @@ protected:
 
     auto mod = op->getParentOfType<mlir::ModuleOp>();
     assert(mod);
-    auto externalFunc = mod.lookupSymbol<mlir::FuncOp>(mangledName);
+    auto externalFunc = mod.lookupSymbol<mlir::func::FuncOp>(mangledName);
     if (!externalFunc) {
       externalFunc = resolver.getFunc(name, types);
       if (externalFunc) {
@@ -449,10 +449,10 @@ protected:
     if (!externalFunc)
       return mlir::failure();
 
-    assert(externalFunc.getType().getNumResults() == op->getNumResults());
+    assert(externalFunc.getFunctionType().getNumResults() == op->getNumResults());
 
     llvm::SmallVector<mlir::Value> castedArgs(args.size());
-    auto funcTypes = externalFunc.getType().getInputs();
+    auto funcTypes = externalFunc.getFunctionType().getInputs();
     for (auto it : llvm::enumerate(args)) {
       auto arg = it.value();
       auto i = it.index();
@@ -1409,7 +1409,7 @@ void MakeStridedLayoutPass::runOnOperation() {
   llvm::SmallVector<mlir::Type> newArgTypes;
   llvm::SmallVector<mlir::Type> newResTypes;
   llvm::SmallVector<mlir::Value> newOperands;
-  for (auto func : mod.getOps<mlir::FuncOp>()) {
+  for (auto func : mod.getOps<mlir::func::FuncOp>()) {
     auto contAttr = func->getAttr(attrStr).dyn_cast_or_null<mlir::ArrayAttr>();
     if (contAttr) {
       auto contAttrRange = contAttr.getAsValueRange<mlir::BoolAttr>();
@@ -1418,7 +1418,7 @@ void MakeStridedLayoutPass::runOnOperation() {
       contigiousArrayArg.clear();
     }
 
-    auto funcType = func.getType();
+    auto funcType = func.getFunctionType();
     auto argTypes = funcType.getInputs();
     auto resTypes = funcType.getResults();
     newArgTypes.assign(argTypes.begin(), argTypes.end());
@@ -1557,7 +1557,7 @@ struct ChangeLayoutReturn
     if (op.operands().empty())
       return mlir::failure();
 
-    auto func = op->getParentOfType<mlir::FuncOp>();
+    auto func = op->getParentOfType<mlir::func::FuncOp>();
     if (!func || !func.isPrivate() || !llvm::hasSingleElement(func.getBody()))
       return mlir::failure();
 
@@ -1625,14 +1625,14 @@ struct ChangeLayoutReturn
     rewriter.replaceOpWithNewOp<mlir::func::ReturnOp>(op, newArgs);
 
     auto newFuncType = [&]() {
-      auto origType = func.getType();
+      auto origType = func.getFunctionType();
       mlir::ValueRange r(newArgs);
       return mlir::FunctionType::get(getContext(), origType.getInputs(),
                                      r.getTypes());
     }();
 
     rewriter.updateRootInPlace(
-        func, [&]() { func.typeAttr(mlir::TypeAttr::get(newFuncType)); });
+        func, [&]() { func.setFunctionTypeAttr(mlir::TypeAttr::get(newFuncType)); });
 
     llvm::SmallVector<mlir::func::CallOp> calls;
     for (auto use : *funcUses) {
@@ -2543,10 +2543,10 @@ static bool isContigiousArray(mlir::Type type) {
 
 struct MarkContigiousArraysPass
     : public mlir::PassWrapper<MarkContigiousArraysPass,
-                               mlir::OperationPass<mlir::FuncOp>> {
+                               mlir::OperationPass<mlir::func::FuncOp>> {
   void runOnOperation() override {
     auto func = getOperation();
-    auto funcType = func.getType();
+    auto funcType = func.getFunctionType();
 
     mlir::OpBuilder builder(&getContext());
     auto attrStr = builder.getStringAttr(kContigiousArraysAttr);
@@ -2565,7 +2565,7 @@ struct MarkContigiousArraysPass
       needAttr = needAttr || res;
     };
 
-    for (auto type : (func.getType().getInputs()))
+    for (auto type : (func.getFunctionType().getInputs()))
       visitTypeRecursive(type, visitor);
 
     if (needAttr)
@@ -2672,7 +2672,7 @@ void LinalgOptPass::runOnOperation() {
       // clang-format on
       >(&context);
 
-  mlir::linalg::populateElementwiseOpsFusionPatterns(patterns);
+  // FIXME mlir::linalg::populateElementwiseOpsFusionPatterns(patterns);
 
   (void)mlir::applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
 }
@@ -2686,13 +2686,13 @@ struct LoopInvariantCodeMotion
                   mlir::PatternRewriter &rewriter) const override {
     auto parentOp = op->getParentOp();
     rewriter.startRootUpdate(parentOp);
-    auto res = mlir::moveLoopInvariantCode(op);
-    if (mlir::succeeded(res)) {
+    bool res = mlir::moveLoopInvariantCode(op);
+    if (res) {
       rewriter.finalizeRootUpdate(parentOp);
     } else {
       rewriter.cancelRootUpdate(parentOp);
     }
-    return res;
+    return ::mlir::LogicalResult::success(res);
   }
 };
 
@@ -2830,7 +2830,8 @@ struct FixDeallocPlacement
     mlir::Operation *newPos = op;
     ++blockIt;
     auto memref = op.memref();
-    mlir::BufferViewFlowAnalysis analysis(op->getParentOfType<mlir::FuncOp>());
+    mlir::BufferViewFlowAnalysis analysis(
+        op->getParentOfType<mlir::func::FuncOp>());
     auto aliases = analysis.resolve(memref);
     auto blockEnd = block->without_terminator().end();
     for (auto &it : llvm::make_range(blockIt, blockEnd)) {
@@ -2939,12 +2940,13 @@ struct ReplaceMemrefCopy : public mlir::OpRewritePattern<mlir::memref::CopyOp> {
 };
 
 struct RemovePseudoCopyPass
-    : public plier::RewriteWrapperPass<RemovePseudoCopyPass, mlir::FuncOp, void,
-                                       RemovePseudoCopy, ReplaceMemrefCopy> {};
+    : public plier::RewriteWrapperPass<RemovePseudoCopyPass, mlir::func::FuncOp,
+                                       void, RemovePseudoCopy,
+                                       ReplaceMemrefCopy> {};
 
 struct CloneArgsPass
     : public mlir::PassWrapper<CloneArgsPass,
-                               mlir::OperationPass<mlir::FuncOp>> {
+                               mlir::OperationPass<mlir::func::FuncOp>> {
   virtual void
   getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<plier::PlierUtilDialect>();
@@ -2955,7 +2957,7 @@ struct CloneArgsPass
 
 void CloneArgsPass::runOnOperation() {
   auto func = getOperation();
-  if (func.isPrivate() || func.isDeclaration() || func.body().empty()) {
+  if (func.isPrivate() || func.isDeclaration() || func.getBody().empty()) {
     return;
   }
 
@@ -3003,12 +3005,12 @@ struct ReplaceClones
 };
 
 struct LowerCloneOpsPass
-    : public plier::RewriteWrapperPass<LowerCloneOpsPass, mlir::FuncOp, void,
-                                       ReplaceClones> {};
+    : public plier::RewriteWrapperPass<LowerCloneOpsPass, mlir::func::FuncOp,
+                                       void, ReplaceClones> {};
 
 struct PostLinalgOptPass
     : public mlir::PassWrapper<PostLinalgOptPass,
-                               mlir::OperationPass<mlir::FuncOp>> {
+                               mlir::OperationPass<mlir::func::FuncOp>> {
 
   void runOnOperation() override;
 };
@@ -3028,7 +3030,7 @@ void PostLinalgOptPass::runOnOperation() {
                   plier::PromoteToParallel, plier::MergeNestedForIntoParallel>(
       &context);
 
-  auto additionalOpt = [](mlir::FuncOp op) {
+  auto additionalOpt = [](mlir::func::FuncOp op) {
     (void)plier::prepareForFusion(op.getRegion());
     return plier::naivelyFuseParallelOps(op.getRegion());
   };
@@ -3039,20 +3041,24 @@ void PostLinalgOptPass::runOnOperation() {
 }
 
 struct FixDeallocPlacementPass
-    : public plier::RewriteWrapperPass<FixDeallocPlacementPass, mlir::FuncOp,
-                                       void, FixDeallocPlacement> {};
+    : public plier::RewriteWrapperPass<FixDeallocPlacementPass,
+                                       mlir::func::FuncOp, void,
+                                       FixDeallocPlacement> {};
 
 static void populatePlierToLinalgGenPipeline(mlir::OpPassManager &pm) {
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<MarkContigiousArraysPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<MarkContigiousArraysPass>());
   pm.addPass(std::make_unique<PlierToPTensorPass>());
+  pm.addPass(std::make_unique<PlierToLinalgPass>());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(std::make_unique<PlierToLinalgPass>());
   pm.addPass(std::make_unique<PTensorToLinalgPass>());
   pm.addPass(std::make_unique<NumpyCallsLoweringPass>());
   pm.addPass(plier::createForceInlinePass());
   pm.addPass(mlir::createSymbolDCEPass());
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<PostPlierToLinalgPass>());
-  pm.addNestedPass<mlir::FuncOp>(mlir::createCSEPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<PostPlierToLinalgPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCSEPass());
 }
 
 static void populatePlierToLinalgOptPipeline(mlir::OpPassManager &pm) {
@@ -3065,33 +3071,35 @@ static void populatePlierToLinalgOptPipeline(mlir::OpPassManager &pm) {
   pm.addPass(std::make_unique<LinalgOptPass>());
 
   pm.addPass(mlir::arith::createConstantBufferizePass());
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<AdditionalBufferize>());
-  pm.addNestedPass<mlir::FuncOp>(mlir::createSCFBufferizePass());
-  pm.addNestedPass<mlir::FuncOp>(mlir::createLinalgBufferizePass());
-  pm.addNestedPass<mlir::FuncOp>(mlir::createTensorBufferizePass());
+  pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<AdditionalBufferize>());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createSCFBufferizePass());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createLinalgBufferizePass());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createTensorBufferizePass());
   pm.addPass(mlir::func::createFuncBufferizePass());
-  pm.addNestedPass<mlir::FuncOp>(mlir::createCanonicalizerPass());
-  pm.addNestedPass<mlir::FuncOp>(
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
       mlir::bufferization::createFinalizingBufferizePass());
 
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<RemovePseudoCopyPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<RemovePseudoCopyPass>());
   pm.addPass(mlir::createCanonicalizerPass());
 
-  pm.addNestedPass<mlir::FuncOp>(
+  pm.addNestedPass<mlir::func::FuncOp>(
       mlir::bufferization::createBufferHoistingPass());
-  pm.addNestedPass<mlir::FuncOp>(
+  pm.addNestedPass<mlir::func::FuncOp>(
       mlir::bufferization::createBufferLoopHoistingPass());
 
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<CloneArgsPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<CloneArgsPass>());
   pm.addPass(std::make_unique<MakeStridedLayoutPass>());
   pm.addPass(std::make_unique<OptimizeStridedLayoutPass>());
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<FinalizeStridedLayoutPass>());
-  pm.addNestedPass<mlir::FuncOp>(
+  pm.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<FinalizeStridedLayoutPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(
       mlir::bufferization::createBufferDeallocationPass());
   pm.addPass(mlir::createCanonicalizerPass());
 
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<LowerCloneOpsPass>());
-  pm.addNestedPass<mlir::FuncOp>(
+  pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<LowerCloneOpsPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(
       mlir::bufferization::createPromoteBuffersToStackPass());
 
   pm.addPass(std::make_unique<LowerLinalgPass>());
@@ -3099,15 +3107,17 @@ static void populatePlierToLinalgOptPipeline(mlir::OpPassManager &pm) {
   pm.addPass(mlir::createSymbolDCEPass());
 
   pm.addPass(plier::createPromoteBoolMemrefPass());
-  pm.addNestedPass<mlir::FuncOp>(plier::createUpliftMathPass());
-  pm.addNestedPass<mlir::FuncOp>(mlir::createCanonicalizerPass());
-  pm.addNestedPass<mlir::FuncOp>(mlir::createLoopInvariantCodeMotionPass());
+  pm.addNestedPass<mlir::func::FuncOp>(plier::createUpliftMathPass());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::createLoopInvariantCodeMotionPass());
 
   // ToDo: This pass also tries to do some simple fusion, whic should be split
   // in separate pass
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<PostLinalgOptPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<PostLinalgOptPass>());
 
-  pm.addNestedPass<mlir::FuncOp>(std::make_unique<FixDeallocPlacementPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<FixDeallocPlacementPass>());
 
   pm.addPass(mlir::createSymbolDCEPass());
 }
