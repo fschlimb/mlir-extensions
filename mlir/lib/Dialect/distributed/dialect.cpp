@@ -12,28 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <mlir-extensions/Dialect/ptensor/dialect.hpp>
+#include <mlir-extensions/Dialect/distributed/dialect.hpp>
 #include <llvm/ADT/TypeSwitch.h>
 #include <mlir/IR/DialectImplementation.h>
 
-namespace ptensor {
+namespace dist {
 
-    void PTensorDialect::initialize()
+    void DistDialect::initialize()
     {
         addTypes<
 #define GET_TYPEDEF_LIST
-#include "mlir-extensions/Dialect/ptensor/PTensorOpsTypes.cpp.inc"
+#include "mlir-extensions/Dialect/distributed/DistOpsTypes.cpp.inc"
             >();
         addOperations<
 #define GET_OP_LIST
-#include "mlir-extensions/Dialect/ptensor/PTensorOps.cpp.inc"
+#include "mlir-extensions/Dialect/distributed/DistOps.cpp.inc"
             >();
     }
 
-} // namespace ptensor
+} // namespace dist
 
-#include "mlir-extensions/Dialect/ptensor/PTensorOpsDialect.cpp.inc"
+#include "mlir-extensions/Dialect/distributed/DistOpsDialect.cpp.inc"
 #define GET_TYPEDEF_CLASSES
-#include "mlir-extensions/Dialect/ptensor/PTensorOpsTypes.cpp.inc"
+#include "mlir-extensions/Dialect/distributed/DistOpsTypes.cpp.inc"
 #define GET_OP_CLASSES
-#include "mlir-extensions/Dialect/ptensor/PTensorOps.cpp.inc"
+#include "mlir-extensions/Dialect/distributed/DistOps.cpp.inc"

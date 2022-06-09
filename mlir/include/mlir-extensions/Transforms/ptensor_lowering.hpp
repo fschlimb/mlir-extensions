@@ -46,6 +46,25 @@ namespace ptensor {
                               ::mlir::ConversionPatternRewriter &rewriter) const override;
     };
 
+    // *********************************************************
+    // **************** Distributed ****************************
+    // *********************************************************
+
+    // Add calls to distributed runtime for arange
+    struct ARangeToDist : public ::mlir::OpRewritePattern<::ptensor::ARangeOp>
+    {
+        using OpRewritePattern::OpRewritePattern;
+
+        ::mlir::LogicalResult
+              matchAndRewrite(::ptensor::ARangeOp op,
+                              ::mlir::PatternRewriter &rewriter) const override;
+    };
+
+
+    // *********************************************************
+    // **************** Linalg *********************************
+    // *********************************************************
+
     // Convert PTensor's arange to Linalg
     struct ARangeLowering : public ::mlir::OpConversionPattern<::ptensor::ARangeOp>
     {

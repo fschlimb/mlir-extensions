@@ -49,6 +49,7 @@
 #include "mlir-extensions/Dialect/plier_util/dialect.hpp"
 
 #include "mlir-extensions/Dialect/ptensor/dialect.hpp"
+#include "mlir-extensions/Dialect/distributed/dialect.hpp"
 
 #include "pipelines/plier_to_scf.hpp"
 #include "pipelines/plier_to_std.hpp"
@@ -681,6 +682,7 @@ struct PTensorToLinalgPass
     virtual void getDependentDialects(::mlir::DialectRegistry &registry) const override
     {
         registry.insert<::ptensor::PTensorDialect>();
+        registry.insert<::dist::DistDialect>();
         registry.insert<::mlir::linalg::LinalgDialect>();
         registry.insert<::mlir::AffineDialect>();
         registry.insert<::mlir::func::FuncDialect>();
@@ -718,7 +720,8 @@ struct PTensorToLinalgPass
 #endif
         // We convert all PTensor stuff...
         target.addIllegalDialect<::ptensor::PTensorDialect>();
-        // ...into Linalg, Affine, Tensor, Arith
+        // ...into Linalg, Affine, Tensor, Arith, Dist
+        target.addLegalDialect<::dist::DistDialect>();
         target.addLegalDialect<::mlir::linalg::LinalgDialect>();
         target.addLegalDialect<::mlir::AffineDialect>();
         target.addLegalDialect<::mlir::tensor::TensorDialect>();

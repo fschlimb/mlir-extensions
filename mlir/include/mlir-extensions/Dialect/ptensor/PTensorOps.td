@@ -1,4 +1,4 @@
-// Copyright 2021 Intel Corporation
+// Copyright 2022 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -69,9 +69,6 @@ def ARangeOp : PTensor_Op<"arange", [NoSideEffect]> {
 
     // result is a tensor
     let results = (outs PTensor_PTensor);
-
-    // Trivial builder
-    // let builders = [OpBuilder<(ins "::mlir::Value" : $start, "::mlir::Value" : $stop, "::mlir::Value" : $step, "bool" : $dist)>];
 }
 
 def EWBinOp : PTensor_Op<"ewbin", [NoSideEffect]> {
@@ -80,8 +77,6 @@ def EWBinOp : PTensor_Op<"ewbin", [NoSideEffect]> {
 
     // result is a tensor
     let results = (outs PTensor_PTensor);
-    // Trivial builder
-    // let builders = [OpBuilder<(ins  "::mlir::Type" : $resultType, "::ptensor::EWBinOpId" : $op, Value : $lhs, Value : $rhs)>];
 }
 
 def ReductionOp : PTensor_Op<"reduction", [NoSideEffect]> {
@@ -90,8 +85,6 @@ def ReductionOp : PTensor_Op<"reduction", [NoSideEffect]> {
 
     // result is a tensor
     let results = (outs PTensor_PTensor);
-    // Trivial builder
-    // let builders = [OpBuilder<(ins  "::mlir::Type" : $resultType, "::ptensor::EWBinOpId" : $op, Value : $lhs, Value : $rhs)>];
 }
 
 #endif // _PTENSOR_OPS_INCLUDED_
