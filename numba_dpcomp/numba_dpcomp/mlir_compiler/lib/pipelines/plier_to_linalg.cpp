@@ -1,4 +1,4 @@
-// Copyright 2021 Intel Corporation
+// Copyright 2022 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@
 #include <mlir/Dialect/Linalg/Passes.h>
 #include <mlir/Dialect/Linalg/Transforms/Transforms.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Shape/IR/Shape.h>
 #include <mlir/Dialect/SCF/Passes.h>
 #include <mlir/Dialect/SCF/SCF.h>
 #include <mlir/Dialect/SCF/Transforms.h>
@@ -672,6 +673,16 @@ struct PlierToPTensorPass
       }
   }
  };
+
+// Lowering dist dialect by no-ops
+struct DistToNoOpPass
+    : public plier::RewriteWrapperPass<DistToNoOpPass, mlir::func::FuncOp,
+                                       plier::DependentDialectsList<::mlir::shape::ShapeDialect>,
+                                       ::dist::ElimRegisterPTensorOp,
+                                       ::dist::ElimLocalOffsetsOp,
+                                       ::dist::ElimLocalShapeOp,
+                                       ::dist::ElimAllReduceOp>
+{};
 
 // Converting PTensor to Linalg
 // After success, no more PTensor should be left, replaced by Linalg & Affine & Arith
@@ -3056,6 +3067,7 @@ static void populatePlierToLinalgGenPipeline(mlir::OpPassManager &pm) {
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(std::make_unique<PlierToLinalgPass>());
   pm.addPass(std::make_unique<PTensorToLinalgPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<DistToNoOpPass>());
   pm.addPass(std::make_unique<NumpyCallsLoweringPass>());
   pm.addPass(plier::createForceInlinePass());
   pm.addPass(mlir::createSymbolDCEPass());

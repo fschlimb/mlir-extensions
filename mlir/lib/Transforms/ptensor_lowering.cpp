@@ -23,6 +23,8 @@
 #include <mlir/Dialect/Arithmetic/IR/Arithmetic.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
+#include <mlir/Dialect/SCF/SCF.h>
+#include <mlir/Dialect/Shape/IR/Shape.h>
 
 
 // return type without a sign
@@ -61,24 +63,45 @@ static mlir::Value doSignCast(mlir::OpBuilder &builder, mlir::Location &loc,
   return val;
 }
 
+// Initialze a distributed Tensor:
+// 1. register tensor with runtime
+// 2. get local shape
+// 3. init local tensor
+// returns pair of tensor and id as assigned by runtime
+// If not distributed, simply init tensor
 static auto initDTensor(mlir::Location &loc,
                         ::mlir::ConversionPatternRewriter &rewriter,
-                        const ::llvm::SmallVector<mlir::Value> & shp,
+                        bool dist,
+                        uint64_t rank,
+                        ::mlir::Value shp,
                         ::mlir::Type eltyp,
                         ::llvm::SmallVector<mlir::Value> & lshp /* out */)
 {
-    // Register tensor with runtime and get local shape
-    auto id = rewriter.create<::dist::RegisterPTensorOp>(loc, eltyp, shp);
-    auto ityp = rewriter.getI64Type();
-    auto shptyp = mlir::MemRefType::get(llvm::SmallVector<int64_t>(1, mlir::ShapedType::kDynamicSize), ityp);
-    auto lshp_mr = rewriter.create<::dist::LocalShapeOp>(loc, shptyp, id);
-    
-    // create a 1d tensor of local shape
-    lshp.resize(shp.size());
-    for(auto i : ::llvm::seq(0lu, shp.size())) {
-        lshp[i] = rewriter.create<::mlir::memref::DimOp>(loc, lshp_mr, i);
+    if(dist) {
+        auto ityp = rewriter.getI64Type();
+        auto idxtyp = rewriter.getIndexType();
+        auto shptyp = mlir::RankedTensorType::get(llvm::SmallVector<int64_t>(1, rank), idxtyp);
+
+        // Register with runtime
+        ::mlir::Value id = rewriter.create<::dist::RegisterPTensorOp>(loc, ityp, shp);
+        // and get local shape
+        auto lshp_mr = rewriter.create<::dist::LocalShapeOp>(loc, shptyp, id);
+
+        // get shape as SmallVector<mlir::Value>
+        // why can't we just use the existing tensor?
+        lshp.resize(rank);
+        for(auto i : ::llvm::seq(0lu, rank)) {
+            auto ia = rewriter.getIndexAttr(i);
+            auto idx = rewriter.create<::mlir::arith::ConstantOp>(loc, ia);
+            lshp[i] = rewriter.create<::mlir::tensor::ExtractOp>(loc, idxtyp, lshp_mr, ::mlir::ValueRange({idx}));
+        }
+        // create a 1d tensor of local shape
+        auto ltnsr = rewriter.create<::mlir::linalg::InitTensorOp>(loc, lshp, eltyp);
+        return std::make_pair(ltnsr.getResult(), id);
+    } else { // not distributed, simply init
+        auto ltnsr = rewriter.create<::mlir::linalg::InitTensorOp>(loc, shp, eltyp);
+        return std::make_pair(ltnsr.getResult(), ::mlir::Value());
     }
-    return std::make_pair(rewriter.create<mlir::linalg::InitTensorOp>(loc, lshp, eltyp), id);
 }
 
 
@@ -92,7 +115,7 @@ ptensor::FromNumpyCall::matchAndRewrite(::plier::PyCallOp op,
     auto converter = *getTypeConverter();
     auto name = adaptor.func_name();
     // convert return type
-    auto rtyp = converter.convertType(op.getType());
+    auto rtyp = converter.convertType(op.getResult().getType());
     op.getType().dump();
     rtyp.dump();
     // get auto-converted args/operands
@@ -103,8 +126,12 @@ ptensor::FromNumpyCall::matchAndRewrite(::plier::PyCallOp op,
         (void)rewriter.replaceOpWithNewOp<::ptensor::ARangeOp>(op, rtyp, args[0], args[1], args[2], true);
         return ::mlir::success();
     } else if(name == "numpy.sum") {
+        // numpy might reduce to scalar, we always want a tensor
         if(!rtyp.isa<::ptensor::PTensorType>()) {
-            rtyp = ::ptensor::PTensorType::get(rewriter.getContext(), ::mlir::RankedTensorType::get({}, rtyp), true);
+            args[0].getType().dump();
+            auto arg = args[0].getType().dyn_cast<::ptensor::PTensorType>();
+            assert(arg);
+            rtyp = ::ptensor::PTensorType::get(rewriter.getContext(), ::mlir::RankedTensorType::get({}, rtyp), arg.getDist());
         }
         (void)rewriter.replaceOpWithNewOp<::ptensor::ReductionOp>(op, rtyp, rewriter.getI32IntegerAttr(::ptensor::SUM), args[0]);
         return ::mlir::success();
@@ -144,22 +171,6 @@ ptensor::FromBinOp::matchAndRewrite(::plier::BinOp op,
 };
 
 // *********************************************************
-// **************** Distributed ****************************
-// *********************************************************
-
-#if 0
-::mlir::LogicalResult
-ptensor::ARangeToDist::matchAndRewrite(::ptensor::ARangeOp op,
-                                       ::mlir::PatternRewriter &rewriter) const
-{
-    auto loc = op.getLoc();
-
-    auto idtyp = rewriter.getI64Type();
-    auto id = rewriter.create<::ptensor::RegisterPTensorOp>(loc, idtyp, 
-}
-#endif
-
-// *********************************************************
 // **************** Linalg *********************************
 // *********************************************************
 
@@ -177,6 +188,8 @@ ptensor::ARangeLowering::matchAndRewrite(::ptensor::ARangeOp op,
     auto start = adaptor.start();
     auto stop = adaptor.stop();
     auto step = adaptor.step();
+    auto orgrtyp = op.getType().dyn_cast<::ptensor::PTensorType>();
+    assert(orgrtyp);
 
     // we operator on signless integers
     auto ityp = rewriter.getI64Type();
@@ -205,7 +218,7 @@ ptensor::ARangeLowering::matchAndRewrite(::ptensor::ARangeOp op,
     auto tmp2 = rewriter.create<mlir::arith::AddIOp>(loc, tmp1, inc);
     auto tmp3 = rewriter.create<mlir::arith::SubIOp>(loc, tmp2, start);
     auto cnt = rewriter.create<mlir::arith::DivUIOp>(loc, tmp3, step).getResult();
-    // cnt = rewriter.create<plier::SignCastOp>(loc, ::mlir::IndexType::get(cnt.getType().getContext()), cnt);
+    cnt = rewriter.create<plier::SignCastOp>(loc, ::mlir::IndexType::get(cnt.getType().getContext()), cnt);
 
     // create shape vector
     auto ttyp = converter.convertType(op.getType()).dyn_cast<::mlir::RankedTensorType>();
@@ -215,15 +228,19 @@ ptensor::ARangeLowering::matchAndRewrite(::ptensor::ARangeOp op,
 
     // register and init tensor
     llvm::SmallVector<mlir::Value> lshp(1);
-    auto tnsr_id = initDTensor(loc, rewriter, shp, typ, lshp);
+    auto tmp_tnsr = rewriter.create<::mlir::linalg::InitTensorOp>(loc, shp, typ);
+    auto shape = rewriter.create<::mlir::shape::ShapeOfOp>(loc, tmp_tnsr);
+    auto tnsr_id = initDTensor(loc, rewriter, orgrtyp.getDist(), 1, shape, typ, lshp);
 
     // compute start index of local partition
-    auto offtyp = mlir::MemRefType::get(llvm::SmallVector<int64_t>(1, mlir::ShapedType::kDynamicSize), ityp);
-    auto offs = rewriter.create<::dist::LocalOffsetsOp>(loc, offtyp, tnsr_id.second);
-    auto _off = rewriter.create<::mlir::memref::DimOp>(loc, offs, 0);
-    auto off = rewriter.create<mlir::arith::IndexCastOp>(loc, ityp, _off);
-    auto tmp = rewriter.create<mlir::arith::MulIOp>(loc, off, step); // off * step
-    start = rewriter.create<mlir::arith::AddIOp>(loc, start, tmp); // start + (off * stride)
+    if(orgrtyp.getDist()) {
+        auto offtyp = rewriter.getIndexType(); //mlir::MemRefType::get(llvm::SmallVector<int64_t>(1, mlir::ShapedType::kDynamicSize), ityp);
+        auto offs = rewriter.create<::dist::LocalOffsetsOp>(loc, offtyp, tnsr_id.second);
+        // auto _off = rewriter.create<::mlir::memref::DimOp>(loc, offs, 0);
+        auto off = rewriter.create<mlir::arith::IndexCastOp>(loc, ityp, offs);
+        auto tmp = rewriter.create<mlir::arith::MulIOp>(loc, off, step); // off * step
+        start = rewriter.create<mlir::arith::AddIOp>(loc, start, tmp); // start + (off * stride)
+    }
     
     // fill with arange values
     // map needed for output only (we have no input tensor)
@@ -244,7 +261,7 @@ ptensor::ARangeLowering::matchAndRewrite(::ptensor::ARangeOp op,
         (void)builder.create<mlir::linalg::YieldOp>(loc, ret.getResult());
     };
 
-    (void)rewriter.replaceOpWithNewOp<mlir::linalg::GenericOp>(op, ttyp, llvm::None, tnsr_id.first.getResult(), maps, iterators, body);
+    (void)rewriter.replaceOpWithNewOp<mlir::linalg::GenericOp>(op, ttyp, llvm::None, tnsr_id.first, maps, iterators, body);
     return ::mlir::success();
 }
 
@@ -340,10 +357,13 @@ ptensor::EWBinOpLowering::matchAndRewrite(::ptensor::EWBinOp op,
                                           ::ptensor::EWBinOp::Adaptor adaptor,
                                           ::mlir::ConversionPatternRewriter &rewriter) const
 {
+    // We expect to lower PTensors
+    auto lhsorgtyp = op.lhs().getType().dyn_cast<::ptensor::PTensorType>();
+    auto rhsorgtyp = op.rhs().getType().dyn_cast<::ptensor::PTensorType>();
     // we expect RankedTensorType as operands
     auto lhstyp = adaptor.lhs().getType().dyn_cast<::mlir::RankedTensorType>();
     auto rhstyp = adaptor.rhs().getType().dyn_cast<::mlir::RankedTensorType>();
-    if(!lhstyp || !rhstyp) {
+    if(!lhstyp || !rhstyp || !lhsorgtyp || !rhsorgtyp) {
         // fail if not, will be retired if operands get converted elsewhere
         return ::mlir::failure();
     }
@@ -352,6 +372,7 @@ ptensor::EWBinOpLowering::matchAndRewrite(::ptensor::EWBinOp op,
     auto converter = *getTypeConverter();
 
     // input tensors might have compatible but different types
+    assert(adaptor.lhs().getType() == adaptor.rhs().getType());
     assert(adaptor.lhs().getType() == adaptor.rhs().getType());
 
     // the element type of a binop depends on the input arguments and the operation itself
@@ -375,8 +396,10 @@ ptensor::EWBinOpLowering::matchAndRewrite(::ptensor::EWBinOp op,
     }
 
     // register and init tensor
-    llvm::SmallVector<mlir::Value> lshp(1);
-    auto tnsr_id = initDTensor(loc, rewriter, shp, typ, lshp);
+    llvm::SmallVector<mlir::Value> lshp(rank);
+    auto tmp_tnsr = rewriter.create<::mlir::linalg::InitTensorOp>(loc, shp, typ);
+    auto shape = rewriter.create<::mlir::shape::ShapeOfOp>(loc, tmp_tnsr);
+    auto tnsr_id = initDTensor(loc, rewriter, lhsorgtyp.getDist(), rank, shape, typ, lshp);
 
     // Get signless operands into vec
     llvm::SmallVector<mlir::Value, 2> oprnds = {adaptor.lhs(), adaptor.rhs()};
@@ -388,7 +411,7 @@ ptensor::EWBinOpLowering::matchAndRewrite(::ptensor::EWBinOp op,
     // create binop as linalg::generic
     const ::ptensor::EWBinOpId bopid = (::ptensor::EWBinOpId)adaptor.op().cast<::mlir::IntegerAttr>().getInt();
     auto bodyBuilder = getBodyBuilder(bopid, typ);
-    (void)rewriter.replaceOpWithNewOp<::mlir::linalg::GenericOp>(op, tnsr_id.first.getType(), oprnds, tnsr_id.first.getResult(), maps, iterators, bodyBuilder).getResult(0);
+    (void)rewriter.replaceOpWithNewOp<::mlir::linalg::GenericOp>(op, tnsr_id.first.getType(), oprnds, tnsr_id.first, maps, iterators, bodyBuilder).getResult(0);
     return ::mlir::success();
 }
 
@@ -424,7 +447,8 @@ ptensor::ReductionOpLowering::matchAndRewrite(::ptensor::ReductionOp op,
 {
     // we expect RankedTensorType as operands
     auto inptyp = adaptor.input().getType().dyn_cast<::mlir::RankedTensorType>();
-    if(!inptyp) {
+    auto orginptyp = op.input().getType().dyn_cast<::ptensor::PTensorType>();
+    if(!inptyp || !orginptyp) {
         // fail if not, will be retired if operands get converted elsewhere
         return ::mlir::failure();
     }
@@ -450,8 +474,11 @@ ptensor::ReductionOpLowering::matchAndRewrite(::ptensor::ReductionOp op,
     // create new tensor
     auto zattr = rewriter.getI64IntegerAttr(0);
     auto zero = rewriter.create<mlir::arith::ConstantOp>(loc, zattr).getResult();
-    auto _tnsr = rewriter.create<::mlir::linalg::InitTensorOp>(loc, shp, sltyp).getResult();
-    auto tnsr = rewriter.create<::mlir::linalg::FillOp>(loc, zero, _tnsr);
+    llvm::SmallVector<mlir::Value> lshp(rank);
+    auto tmp_tnsr = rewriter.create<::mlir::linalg::InitTensorOp>(loc, shp, typ);
+    auto shape = rewriter.create<::mlir::shape::ShapeOfOp>(loc, tmp_tnsr);
+    auto tnsr_id = initDTensor(loc, rewriter, orginptyp.getDist(), rank, shape, sltyp, lshp);
+    auto tnsr = rewriter.create<::mlir::linalg::FillOp>(loc, zero, tnsr_id.first);
 
     // rank/num-dims of input
     auto irank = static_cast<unsigned>(inptyp.getRank());
@@ -468,11 +495,60 @@ ptensor::ReductionOpLowering::matchAndRewrite(::ptensor::ReductionOp op,
     auto rtnsr = rewriter.create<::mlir::linalg::GenericOp>(loc, tnsr.getType(0), oprnds, tnsr.getResult(0), maps, iterators, bodyBuilder).getResult(0);
 
     // we reduced the local part, now we reduce across processes
-    rtnsr =  rewriter.create<::dist::AllReduceOp>(loc, tnsr.getType(0), adaptor.op(), rtnsr);
+    if(orginptyp.getDist()) {
+        rtnsr =  rewriter.create<::dist::AllReduceOp>(loc, tnsr.getType(0), adaptor.op(), rtnsr);
+    }
 
     // For now we only support reduction over all dims and return a scalar
     auto rval = rewriter.create<::mlir::tensor::ExtractOp>(loc, sltyp, rtnsr, ::mlir::ValueRange());
     auto x = rewriter.replaceOpWithNewOp<::plier::SignCastOp>(op, typ, rval);
     x.dump();
+    return ::mlir::success();
+}
+
+// *********************************************************
+// **************** Distributed ****************************
+// *********************************************************
+
+// dummy: constant op
+template<typename Op>
+void _toConst(Op op, mlir::PatternRewriter &rewriter, int64_t v=0)
+{
+    auto attr = rewriter.getIndexAttr(v);
+    rewriter.replaceOpWithNewOp<mlir::arith::ConstantOp>(op, attr);
+}
+
+// do nothing
+::mlir::LogicalResult
+dist::ElimRegisterPTensorOp::matchAndRewrite(::dist::RegisterPTensorOp op, mlir::PatternRewriter &rewriter) const
+{
+    _toConst(op, rewriter);
+    return ::mlir::success();
+}
+
+// do nothing
+::mlir::LogicalResult
+dist::ElimLocalOffsetsOp::matchAndRewrite(::dist::LocalOffsetsOp op, mlir::PatternRewriter &rewriter) const
+{
+    _toConst(op, rewriter);
+    return ::mlir::success();
+}
+
+// return orignal (global) shape
+::mlir::LogicalResult
+dist::ElimLocalShapeOp::matchAndRewrite(::dist::LocalShapeOp op, mlir::PatternRewriter &rewriter) const
+{
+    auto x = op.ptensor().getDefiningOp<::dist::RegisterPTensorOp>();
+    assert(x);
+    x.shape().dump();
+    rewriter.replaceOp(op, x.shape());
+    return ::mlir::success();
+}
+
+// replace with idendity cast
+::mlir::LogicalResult
+dist::ElimAllReduceOp::matchAndRewrite(::dist::AllReduceOp op, mlir::PatternRewriter &rewriter) const
+{
+    rewriter.replaceOpWithNewOp<::mlir::tensor::CastOp>(op, op.tensor().getType(), op.tensor());
     return ::mlir::success();
 }

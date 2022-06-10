@@ -1,4 +1,4 @@
-// Copyright 2021 Intel Corporation
+// Copyright 2022 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #pragma once
 
 #include "mlir-extensions/Dialect/plier/dialect.hpp"
+#include "mlir-extensions/Dialect/distributed/dialect.hpp"
 #include "mlir-extensions/Dialect/ptensor/dialect.hpp"
 
 #include <mlir/Transforms/DialectConversion.h>
@@ -45,21 +46,6 @@ namespace ptensor {
                               ::plier::BinOp::Adaptor adaptor,
                               ::mlir::ConversionPatternRewriter &rewriter) const override;
     };
-
-    // *********************************************************
-    // **************** Distributed ****************************
-    // *********************************************************
-
-    // Add calls to distributed runtime for arange
-    struct ARangeToDist : public ::mlir::OpRewritePattern<::ptensor::ARangeOp>
-    {
-        using OpRewritePattern::OpRewritePattern;
-
-        ::mlir::LogicalResult
-              matchAndRewrite(::ptensor::ARangeOp op,
-                              ::mlir::PatternRewriter &rewriter) const override;
-    };
-
 
     // *********************************************************
     // **************** Linalg *********************************
@@ -97,5 +83,40 @@ namespace ptensor {
                               ::ptensor::ReductionOp::Adaptor adaptor,
                               ::mlir::ConversionPatternRewriter &rewriter) const override;
     };
-
 } // namespace ptensor
+
+namespace dist {
+    // *********************************************************
+    // **************** Distributed ****************************
+    // *********************************************************
+
+    struct ElimRegisterPTensorOp : public mlir::OpRewritePattern<::dist::RegisterPTensorOp>
+    {
+        using OpRewritePattern::OpRewritePattern;
+
+        ::mlir::LogicalResult
+        matchAndRewrite(::dist::RegisterPTensorOp op, mlir::PatternRewriter &rewriter) const override;
+    };
+    struct ElimLocalOffsetsOp : public mlir::OpRewritePattern<::dist::LocalOffsetsOp>
+    {
+        using OpRewritePattern::OpRewritePattern;
+
+        ::mlir::LogicalResult
+        matchAndRewrite(::dist::LocalOffsetsOp op, mlir::PatternRewriter &rewriter) const override;
+    };
+    struct ElimLocalShapeOp : public mlir::OpRewritePattern<::dist::LocalShapeOp>
+    {
+        using OpRewritePattern::OpRewritePattern;
+
+        ::mlir::LogicalResult
+        matchAndRewrite(::dist::LocalShapeOp op, mlir::PatternRewriter &rewriter) const override;
+    };
+    struct ElimAllReduceOp : public mlir::OpRewritePattern<::dist::AllReduceOp>
+    {
+        using OpRewritePattern::OpRewritePattern;
+
+        ::mlir::LogicalResult
+        matchAndRewrite(::dist::AllReduceOp op, mlir::PatternRewriter &rewriter) const override;
+    };
+
+} // namespace dist

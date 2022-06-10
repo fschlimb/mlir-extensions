@@ -147,6 +147,7 @@ target_link_libraries(${MLIR_EXTENSIONS_LIB} PRIVATE
     MLIRTensorTransforms
     MLIRMathToSPIRV
     MLIRControlFlowToSPIRV
+    MLIRShape
     )
 
 target_include_directories(${MLIR_EXTENSIONS_LIB} SYSTEM PRIVATE
