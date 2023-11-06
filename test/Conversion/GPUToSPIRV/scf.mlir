@@ -21,10 +21,10 @@ module attributes {
         // CHECK: %[[STEP:.*]] = spirv.Constant 2 : i64
         %step = arith.constant 2 : index
         // CHECK: spirv.mlir.loop {
-        // CHECK-NEXT: spirv.Branch ^[[HEADER:.*]](%[[LB]] : i64)
-        // CHECK:      ^[[HEADER]](%[[INDVAR:.*]]: i64):
+        // CHECK-NEXT: spirv.Branch ^[[HEADER]](%[[LB]] : i64)
+        // CHECK:      ^[[HEADER]](%[[INDVAR]]: i64):
         // CHECK:        %[[CMP:.*]] = spirv.SLessThan %[[INDVAR]], %[[UB]] : i64
-        // CHECK:        spirv.BranchConditional %[[CMP]], ^[[BODY:.*]], ^[[MERGE:.*]]
+        // CHECK:        spirv.BranchConditional %[[CMP]], ^[[BODY]], ^[[MERGE]]
         // CHECK:      ^[[BODY]]:
         // CHECK:        %[[OFFSET1:.*]] = spirv.Constant 0 : i64
         // CHECK:        %[[STRIDE1:.*]] = spirv.Constant 1 : i64

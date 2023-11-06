@@ -19,11 +19,11 @@ module attributes {
 
   // CHECK-LABEL: spirv.module @{{.*}} Physical64 OpenCL
   gpu.module @kernels {
-    // CHECK-DAG: spirv.GlobalVariable @[[$LOCALINVOCATIONIDVAR:.*]] built_in("LocalInvocationId") : !spirv.ptr<vector<3xi64>, Input>
-    // CHECK-DAG:spirv.GlobalVariable @[[$WORKGROUPIDVAR:.*]] built_in("WorkgroupId") : !spirv.ptr<vector<3xi64>, Input>
+    // CHECK-DAG: spirv.GlobalVariable @[[$LOCALINVOCATIONIDVAR]] built_in("LocalInvocationId") : !spirv.ptr<vector<3xi64>, Input>
+    // CHECK-DAG:spirv.GlobalVariable @[[$WORKGROUPIDVAR]] built_in("WorkgroupId") : !spirv.ptr<vector<3xi64>, Input>
     // CHECK-LABEL:    spirv.func @load_store_kernel(
-    // CHECK-SAME: %[[ARG0:.*]]: !spirv.ptr<!spirv.array<10 x f32>, CrossWorkgroup>{{.*}}, %[[ARG1:.*]]: !spirv.ptr<!spirv.array<10 x f32>, CrossWorkgroup>{{.*}}, %[[ARG2:.*]]: !spirv.ptr<!spirv.array<10 x f32>, CrossWorkgroup>,
-    // CHECK-SAME: %[[ARG3:.*]]: i64, %[[ARG4:.*]]: i64, %[[ARG5:.*]]: i64, %[[ARG6:.*]]: i64
+    // CHECK-SAME: %[[ARG0]]: !spirv.ptr<!spirv.array<10 x f32>, CrossWorkgroup>{{.*}}, %[[ARG1]]: !spirv.ptr<!spirv.array<10 x f32>, CrossWorkgroup>{{.*}}, %[[ARG2]]: !spirv.ptr<!spirv.array<10 x f32>, CrossWorkgroup>,
+    // CHECK-SAME: %[[ARG3]]: i64, %[[ARG4]]: i64, %[[ARG5]]: i64, %[[ARG6]]: i64
     gpu.func @load_store_kernel(%arg0: memref<2x5xf32>, %arg1: memref<2x5xf32>, %arg2: memref<2x5xf32>, %arg3: index, %arg4: index, %arg5: index, %arg6: index) kernel
       attributes {spirv.entry_point_abi = #spirv.entry_point_abi<>} {
       // CHECK: %[[ADDRESSWORKGROUPID:.*]] = spirv.mlir.addressof @[[$WORKGROUPIDVAR]]
