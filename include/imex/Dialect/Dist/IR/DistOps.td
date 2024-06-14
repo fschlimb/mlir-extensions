@@ -58,6 +58,26 @@ class Dist_Attr<string attrName, string attrMnemonic, list<Trait> traits = []>
   let mnemonic = attrMnemonic;
 }
 
+def Dist_I64ArrayAttr : DenseArrayAttrBase<"DenseI64ArrayAttr", "int64_t", "i64">;
+
+def DistSliceAttr : Dist_Attr<"DistSlice", "dist_slice"> {
+  let summary = "List of offsets, sizes and strides for a slice, with optional base offset and sizes";
+  let parameters = (ins
+    ArrayRefParameter<"::mlir::DenseI64ArrayAttr">:$slcOffsets,
+    ArrayRefParameter<"::mlir::DenseI64ArrayAttr">:$slcSizes,
+    ArrayRefParameter<"::mlir::DenseI64ArrayAttr">:$slcStrides,
+    OptionalArrayRefParameter<"::mlir::DenseI64ArrayAttr">:$baseSizes
+  );
+  let assemblyFormat = [{
+    `<` `[` $slcOffsets `]`  `[` $slcSizes `]` `[` $slcStrides `]` `[` $baseSizes `]` `>`
+  }];
+  let builders = [
+    AttrBuilder<(ins "::llvm::ArrayRef<::mlir::DenseI64ArrayAttr>":$slcOffsets, "::llvm::ArrayRef<::mlir::DenseI64ArrayAttr>":$slcSizes, "::llvm::ArrayRef<::mlir::DenseI64ArrayAttr>":$slcStrides), [{
+      return DistSliceAttr::get($_ctxt, slcOffsets, slcSizes, slcStrides, {});
+    }]>
+  ];
+}
+
 def DistEnvAttr
     : Dist_Attr<"DistEnv", "dist_env"> {
   let summary = "Environment for indicating that a NDArray is distributed";
@@ -311,6 +331,31 @@ def LocalBoundingBoxOp : Dist_Op<"local_bounding_box", [AttrSizedOperandSegments
       assert(sizes.size() == rank);
       ::imex::TypVec rt(2 * rank, $_builder.getIndexType());
       build($_builder, $_state, ::mlir::TypeRange(rt), inner, offs, sizes, strides, toffs, tsizes, bboffs, bbsizes);
+    }]>,
+  ];
+}
+
+def BoundingBoxOp : Dist_Op<"bounding_box", [SameVariadicOperandSize, SameVariadicResultSize, Pure]> {
+  let summary = "Compute (or extend) bounding box.";
+
+  let arguments = (ins DenseI64ArrayAttr:$offsets, DenseI64ArrayAttr:$sizes, DenseI64ArrayAttr:$strides,
+                       DenseI64ArrayAttr:$target_offsets, DenseI64ArrayAttr:$target_sizes,
+                       Variadic<Index>:$b_b_offsets, Variadic<Index>:$b_b_sizes);
+  let results = (outs Variadic<Index>:$result_offsets, Variadic<Index>:$result_sizes);
+
+  let assemblyFormat = [{
+    oilist(`bboffs` $b_b_offsets | `bb_sizes` $b_b_sizes) attr-dict `:` qualified(type(results))
+  }];
+
+  let builders = [
+    // auto-deduce return type: same as input
+    OpBuilder<(ins "::mlir::ArrayRef<int64_t>":$offs, "::mlir::ArrayRef<int64_t>":$sizes, "::mlir::ArrayRef<int64_t>":$strides,
+                    "::mlir::ArrayRef<int64_t>":$toffs, "::mlir::ArrayRef<int64_t>":$tsizes,
+                    "::mlir::ValueRange":$bboffs, "::mlir::ValueRange":$bbsizes), [{
+      size_t rank = offs.size();
+      assert(sizes.size() == rank);
+      ::imex::TypVec rt(2 * rank, $_builder.getIndexType());
+      build($_builder, $_state, ::mlir::TypeRange(rt), offs, sizes, strides, toffs, tsizes, bboffs, bbsizes);
     }]>,
   ];
 }

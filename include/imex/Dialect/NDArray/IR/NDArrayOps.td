@@ -300,7 +300,7 @@ def SubviewOp : NDArray_OpWithOffsetSizesAndStrides<"subview", [
     DenseI64ArrayAttr:$static_sizes,
     DenseI64ArrayAttr:$static_strides
   );
-  let results = (outs NDArray_NDArray:$result);
+  let results = (outs AnyType:$result);
 
   let assemblyFormat = [{
     $source ``
