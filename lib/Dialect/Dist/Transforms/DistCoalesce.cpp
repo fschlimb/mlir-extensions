@@ -44,6 +44,7 @@
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Mesh/IR/MeshDialect.h>
 #include <mlir/Dialect/Mesh/IR/MeshOps.h>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/Interfaces/ShapedOpInterfaces.h>
 
@@ -109,7 +110,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
     } else if (auto op =
                    ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(defOp)) {
       return getArray(op.getDestination());
-    } else if (auto op = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(defOp)) {
+    } else if (auto op = ::mlir::dyn_cast<::imex::dist::ShardOp>(defOp)) {
       return getArray(op.getSrc());
     } else if (auto op = ::mlir::dyn_cast<::mlir::UnrealizedConversionCastOp>(
                    defOp)) {
@@ -126,7 +127,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
 
   /// return true if given op comes from a EWOp and has another EWOp
   /// as its single user.
-  bool is_temp(::mlir::mesh::ShardOp &op) {
+  bool is_temp(::imex::dist::ShardOp &op) {
     if (!op->hasAttr("target") && op->hasOneUse() &&
         ::mlir::isa<::imex::dist::EWBinOp, ::imex::dist::EWUnyOp>(
             *op->user_begin()) &&
@@ -234,23 +235,6 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
     return nullptr;
   }
 
-  /// entry point for back propagation of target parts, starting with
-  /// RePartitionOp. Verifies that defining ops are what we assume/can handle.
-  /// Then starts actual back propagation
-  void backPropagatePart(::mlir::IRRewriter &builder, ::mlir::mesh::ShardOp op,
-                         ::mlir::Operation *&nOp) {
-    nOp = nullptr;
-    auto toffs = op->getAttr("target");
-    if (!toffs) {
-      return;
-    }
-    auto defOp = op.getSrc().getDefiningOp();
-    if (defOp) {
-      backPropagatePart(builder, defOp, toffs, nOp);
-    }
-    return;
-  }
-
   /// clone subviewops which are returned and mark them "final"
   /// Needed to protect them from being "redirected" to a reparitioned copy
   void backPropagateReturn(::mlir::IRRewriter &builder,
@@ -294,24 +278,40 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
     }
   }
 
+  /// entry point for back propagation of target shardings.
+  void backPropagateSharding(::mlir::IRRewriter &builder,
+                             ::imex::dist::ShardOp op) {
+    ::mlir::Operation *nOp = nullptr;
+    auto target = op.getConstraint();
+    if (!target) {
+      return;
+    }
+    auto defOp = op.getSrc().getDefiningOp();
+    if (defOp) {
+      backPropagateSharding(builder, defOp, target, nOp);
+      assert(nOp == nullptr);
+    }
+    return;
+  }
+
   /// The actual back propagation of target parts
   /// if meeting a supported op, recursively gets defining ops and back
   /// propagates as it follows only supported ops, all other ops act as
   /// propagation barriers (e.g. InsertSliceOps) on the way it updates target
   /// info on SubviewOps and marks RePartitionOps for elimination
-  void backPropagatePart(::mlir::IRRewriter &builder, ::mlir::Operation *op,
-                         ::mlir::Attribute target, ::mlir::Operation *&nOp) {
+  void backPropagateSharding(::mlir::IRRewriter &builder, ::mlir::Operation *op,
+                             ::mlir::Value target, ::mlir::Operation *&nOp) {
     nOp = nullptr;
-    if (auto typedOp = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op)) {
-      assert(!typedOp->hasAttr("target") || (false && "not implemented yet"));
-      typedOp->setAttr("target", target);
+    if (auto typedOp = ::mlir::dyn_cast<::imex::dist::ShardOp>(op)) {
+      assert(!typedOp.getConstraint() || (false && "not implemented yet"));
+      typedOp.getConstraintMutable().assign(target);
       op = typedOp.getSrc().getDefiningOp();
       assert(op);
     }
     if (auto typedOp = ::mlir::dyn_cast<::imex::ndarray::EWBinOp>(op)) {
       op = typedOp.getLhs().getDefiningOp();
       if (op) {
-        backPropagatePart(builder, op, target, nOp);
+        backPropagateSharding(builder, op, target, nOp);
       }
       op = typedOp.getRhs().getDefiningOp();
     } else if (auto typedOp = ::mlir::dyn_cast<::imex::ndarray::EWUnyOp>(op)) {
@@ -323,27 +323,27 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       } else {
         op = nullptr;
       }
-    } else if (!::mlir::isa<::mlir::mesh::ShardOp>(op)) {
+    } else if (!::mlir::isa<::imex::dist::ShardOp>(op)) {
       op = nullptr;
     }
     if (op) {
-      backPropagatePart(builder, op, target, nOp);
+      backPropagateSharding(builder, op, target, nOp);
     }
     return;
   }
 
-  ::mlir::mesh::ShardOp getShardOp(::mlir::Operation *op) {
-    assert(op->hasOneUse());
+  ::imex::dist::ShardOp getShardOp(::mlir::Operation *op) {
+    assert(op->hasOneUse() || op->use_empty());
     op = *op->user_begin();
     if (::mlir::isa<::mlir::UnrealizedConversionCastOp>(op)) {
       assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
       assert(op->hasOneUse());
       op = *op->user_begin();
     }
-    return ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op);
+    return ::mlir::dyn_cast<::imex::dist::ShardOp>(op);
   }
 
-  ::mlir::mesh::ShardOp getShardOpOfVal(::mlir::Value val) {
+  ::imex::dist::ShardOp getShardOpOfVal(::mlir::Value val) {
     auto op = val.getDefiningOp();
     if (::mlir::isa<::mlir::UnrealizedConversionCastOp>(op)) {
       assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
@@ -351,8 +351,74 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       op = op->getOperand(0).getDefiningOp();
     }
     assert(op->hasOneUse());
-    return ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op);
+    return ::mlir::dyn_cast<::imex::dist::ShardOp>(op);
   }
+
+  /// compute target part for a given InsertSliceOp
+  ::mlir::Operation *computeTarget(::mlir::IRRewriter &builder,
+                                   ::imex::ndarray::InsertSliceOp op) {
+    auto sOffs = op.getStaticOffsets();
+    auto sSizes = op.getStaticSizes();
+    auto sStrides = op.getStaticStrides();
+    assert(!(::mlir::ShapedType::isDynamicShape(sSizes) ||
+             ::mlir::ShapedType::isDynamicShape(sOffs) ||
+             ::mlir::ShapedType::isDynamicShape(sStrides)) ||
+           (false && "SubviewOp must have dynamic offsets, sizes and strides"));
+
+    auto src = getShardOpOfVal(op.getDestination()).getSrc();
+    return builder.create<::imex::dist::TargetOfSliceOp>(
+        op->getLoc(),
+        ::imex::dist::ShardingConstraintType::get(builder.getContext()), src,
+        sOffs, sSizes, sStrides);
+  }
+
+  //       shardOp = getShardOpOfVal(dest); builder.getI64ArrayAttr(sOffs),
+  //       builder.getI64ArrayAttr(sSizes), builder.getI64ArrayAttr(sStrides));
+  //   auto dest = op.getDestination();
+  //   auto destType =
+  //       ::mlir::cast<::mlir::ShapedType>(dest.getType());
+  //   assert(destType.hasStaticShape());
+  //   auto tShape = destType.getShape();
+
+  //   auto shardOp = getShardOpOfVal(dest);
+  //   auto meshOp = mlir::mesh::getMesh(op, shardOp.getShard().getMesh(),
+  //   symbolTableCollection); auto meshShape = meshOp.getShape(); auto nDevices
+  //   = ::mlir::ShapedType::getNumElements(meshShape); // will assert if not
+  //   static auto sAxes = shardOp.getShard().getSplitAxes(); auto tRank =
+  //   tShape.size(); auto sRank = sAxes.size(); auto mRank = meshShape.size();
+  //   assert(tRank >= sRank);
+
+  //   ::mlir::SmallVector<::mlir::SmallVector<int64_t>> targetSzs;
+  //   ::mlir::SmallVector<int64_t> meshSzs;
+  //   ::mlir::SmallVector<int64_t> meshStrides(t1);
+
+  //   for (auto [i, tshape] : llvm::enumerate(sAxes)) {
+  //     auto sz = tShape[i];
+  //     int64_t sz = 1;
+  //     if (i<sRank) {
+  //       assert(sAxes[i].size() > 0 || (false && "replication axes not
+  //       supported")); for (auto j : sAxes[i].asArrayRef()) {
+  //         assert(j < (int64_t)mRank);
+  //         sz *= meshShape[j];
+  //       }
+  //     }
+  //     meshSzs.emplace_back(sz);
+  //   }
+
+  //   targetSzs.resize(sRank);
+  //   for (auto dev = 0u; dev<nDevices; ++dev) { // loop over devices
+  //     auto idx = ::mlir::
+  //     // compute tile size and local size (which can be greater)
+  //     auto rem = sz % splitSz;
+  //     auto tSz = sz / splitSz;
+  //     auto lSz = tSz + ((dev + rem) >= splitSz ? 1l : 0l);
+  //     // auto lOff = (dev * tSz) + std::max(0l, rem - (splitSz - dev));
+  //     targetSzs[dev].emplace_back(lSz);
+  //     }
+  //   }
+
+  //   return DistTargetAttr::get(builder.getContext(), targetSzs);
+  // }
 
   // This pass tries to combine multiple RePartitionOps into one.
   // Dependent operations (like SubviewOp) get adequately annotated.
@@ -369,12 +435,12 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
 
     auto root = this->getOperation();
     ::mlir::IRRewriter builder(&getContext());
+    ::mlir::SymbolTableCollection symbolTableCollection;
 
     // back-propagate targets from RePartitionOps
 
     ::std::set<::imex::dist::RePartitionOp> shardOpsToElimNew;
     ::mlir::SmallVector<::imex::dist::RePartitionOp> rpOps;
-    ::mlir::SmallVector<::mlir::mesh::ShardOp> shardOps;
     ::mlir::SmallVector<::mlir::func::ReturnOp> retOps;
     ::mlir::Operation *firstOp = nullptr;
 
@@ -406,36 +472,37 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
     }
 
     // target-annotate all insert_slice ops' input operands
-    root->walk([&](::imex::ndarray::InsertSliceOp op) {
-      auto srcop = op.getSource().getDefiningOp<::mlir::mesh::ShardOp>();
-      assert(srcop && "InsertSliceOp must have a ShardOp as source");
+    // root->walk([&](::imex::ndarray::InsertSliceOp op) {
+    //   auto srcop = op.getSource().getDefiningOp<::imex::dist::ShardOp>();
+    //   assert(srcop && "InsertSliceOp must have a ShardOp as source");
 
-      auto sOffs = op.getStaticOffsets();
-      auto sSizes = op.getStaticSizes();
-      auto sStrides = op.getStaticStrides();
-      assert(
-          !(::mlir::ShapedType::isDynamicShape(sSizes) ||
-            ::mlir::ShapedType::isDynamicShape(sOffs) ||
-            ::mlir::ShapedType::isDynamicShape(sStrides)) ||
-          (false && "SubviewOp must have dynamic offsets, sizes and strides"));
-      auto dstType =
-          ::mlir::cast<::mlir::ShapedType>(op.getDestination().getType());
-      assert(dstType.hasStaticShape());
-      auto sShape = dstType.getShape();
-      auto target = DistSliceAttr::get(builder.getContext(),
-                                       builder.getDenseI64ArrayAttr(sOffs),
-                                       builder.getDenseI64ArrayAttr(sSizes),
-                                       builder.getDenseI64ArrayAttr(sStrides),
-                                       builder.getDenseI64ArrayAttr(sShape));
-      srcop->setAttr("target", target);
-      shardOps.emplace_back(srcop);
-    });
+    //   auto sOffs = op.getStaticOffsets();
+    //   auto sSizes = op.getStaticSizes();
+    //   auto sStrides = op.getStaticStrides();
+    //   assert(
+    //       !(::mlir::ShapedType::isDynamicShape(sSizes) ||
+    //         ::mlir::ShapedType::isDynamicShape(sOffs) ||
+    //         ::mlir::ShapedType::isDynamicShape(sStrides)) ||
+    //       (false && "SubviewOp must have dynamic offsets, sizes and
+    //       strides"));
+    //   auto dstType =
+    //       ::mlir::cast<::mlir::ShapedType>(op.getDestination().getType());
+    //   assert(dstType.hasStaticShape());
+    //   auto sShape = dstType.getShape();
+    //   auto target = DistSliceAttr::get(builder.getContext(),
+    //                                    builder.getDenseI64ArrayAttr(sOffs),
+    //                                    builder.getDenseI64ArrayAttr(sSizes),
+    //                                    builder.getDenseI64ArrayAttr(sStrides),
+    //                                    builder.getDenseI64ArrayAttr(sShape));
+    //   srcop->setAttr("target", target);
+    //   shardOps.emplace_back(srcop);
+    // });
 
     // Find returnops and protect SubviewOp operands
     // FIXME: The implementation doesn't seem to support subviews of subviews
     // FIXME: elimination of temp RePartitionOps should be done in a different
     // pass root->walk([&](::mlir::Operation *op) {
-    //   // if (auto typedOp = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op)) {
+    //   // if (auto typedOp = ::mlir::dyn_cast<::imex::dist::ShardOp>(op)) {
     //   //   if (!typedOp->hasAttr("target")) {
     //   //     if (is_temp(typedOp)) {
     //   //       shardOpsToElimNew.emplace(typedOp);
@@ -454,42 +521,48 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
 
     // auto &dom = this->getAnalysis<::mlir::DominanceInfo>();
 
-    // perform back propagation on each RePartitionOp
-    for (auto op = shardOps.rbegin(); op != shardOps.rend(); ++op) {
-      ::mlir::Operation *nOp = nullptr;
-      backPropagatePart(builder, *op, nOp);
-      assert(!nOp);
-    }
-
     // eliminate no longer needed RePartitionOps
     // for (auto rp : shardOpsToElimNew) {
     //   builder.replaceOp(rp, rp.getArray());
     // }
 
-    if (!shardOps.empty()) {
-      // find InsertSliceOp, SubviewOp and RePartitionOps on the same base
-      // pointer
-      // opsGroups holds independent partial operation sequences operating on a
-      // specific base pointer
+    // find InsertSliceOp, SubviewOp and RePartitionOps on the same base
+    // pointer
+    // opsGroups holds independent partial operation sequences operating on a
+    // specific base pointer
 
-      std::unordered_map<::mlir::Operation *,
-                         ::mlir::SmallVector<::mlir::Operation *>>
-          opsGroups;
-      root->walk([&](::mlir::Operation *op) {
-        ::mlir::Value val;
+    std::unordered_map<::mlir::Operation *,
+                       ::mlir::SmallVector<::mlir::Operation *>>
+        opsGroups;
+    std::unordered_map<::mlir::Operation *, ::mlir::Operation *> baseIPts;
+
+    root->walk([&](::mlir::Operation *op) {
+      ::mlir::Value val;
+      if (auto typedOp = ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(op)) {
+        val = typedOp.getDestination();
+      } else if (auto typedOp =
+                     ::mlir::dyn_cast<::imex::ndarray::SubviewOp>(op)) {
+        val = typedOp.getSource();
+      }
+      if (val) {
+        auto base = getArray(val);
+        baseIPts.emplace(base, getShardOp(base));
+        opsGroups[base].emplace_back(op);
         if (auto typedOp =
                 ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(op)) {
-          val = typedOp.getDestination();
-        } else if (auto typedOp =
-                       ::mlir::dyn_cast<::imex::ndarray::SubviewOp>(op)) {
-          val = typedOp.getSource();
+          builder.setInsertionPointAfter(baseIPts[base]);
+          auto target = computeTarget(builder, typedOp);
+          baseIPts[base] = target;
+          auto srcop =
+              typedOp.getSource().getDefiningOp<::imex::dist::ShardOp>();
+          assert(srcop && "InsertSliceOp must have a ShardOp as source");
+          srcop.getConstraintMutable().assign(target->getResult(0));
+          backPropagateSharding(builder, srcop);
         }
-        if (val) {
-          auto base = getArray(val);
-          opsGroups[base].emplace_back(op);
-        }
-      });
+      }
+    });
 
+    if (!opsGroups.empty()) {
       // outer loop iterates base over base pointers
       for (auto grpP : opsGroups) {
         if (grpP.second.empty())
@@ -500,7 +573,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
         // auto &dom = this->getAnalysis<::mlir::DominanceInfo>();
 
         auto shardOp = getShardOp(base);
-        builder.setInsertionPoint(shardOp);
+        builder.setInsertionPointAfter(shardOp);
         // auto baseShard = shardOp.getShard();
 
         // find groups operating on the same base, groups are separated by write
@@ -509,7 +582,8 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
         ::mlir::ValueRange bbOffs, bbSizes;
         ::mlir::SmallVector<::mlir::DenseI64ArrayAttr> bbOffsVec, bbSizesVec,
             bbStridesVec, tOffsVec, tSizesVec, tStridesVec, tBaseSizesVec;
-        ::mlir::SmallVector<::imex::ndarray::SubviewOp> subviewOps;
+        ::imex::ValVec subviews;
+        ::imex::ValVec constraints;
 
         for (auto i : grpP.second) {
           if (auto subviewOp =
@@ -527,46 +601,53 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
                    "SubviewOp must have dynamic offsets, sizes and strides"));
               auto svShardOp = getShardOp(subviewOp);
               assert(svShardOp);
-              auto target =
-                  ::mlir::cast<DistSliceAttr>(svShardOp->getAttr("target"));
+              auto target = svShardOp.getConstraint();
               assert(target);
               bbOffsVec.emplace_back(builder.getDenseI64ArrayAttr(sOffs));
               bbSizesVec.emplace_back(builder.getDenseI64ArrayAttr(sSizes));
               bbStridesVec.emplace_back(builder.getDenseI64ArrayAttr(sStrides));
-              tOffsVec.emplace_back(target.getSlcOffsets().front());
-              tSizesVec.emplace_back(target.getSlcSizes().front());
-              tStridesVec.emplace_back(target.getSlcStrides().front());
-              tBaseSizesVec.emplace_back(target.getBaseSizes().front());
-              subviewOps.emplace_back(subviewOp);
+              constraints.emplace_back(target);
+              // tOffsVec.emplace_back(target.getSlcOffsets().front());
+              // tSizesVec.emplace_back(target.getSlcSizes().front());
+              // tStridesVec.emplace_back(target.getSlcStrides().front());
+              // tBaseSizesVec.emplace_back(target.getBaseSizes().front());
+              subviews.emplace_back(subviewOp.getResult());
             }
           } else {
-            auto updateSharding = [&shardOp](::mlir::mesh::ShardOp op) {
-              assert(op.getSrc().getDefiningOp() == shardOp);
-              assert(op.getShard() == shardOp.getShard());
-              op->setAttr("subviews", shardOp->getAttr("subviews"));
-              op->setAttr("targets", shardOp->getAttr("targets"));
+            auto updateSharding = [&shardOp](::imex::dist::ShardOp op,
+                                             ::imex::dist::ShardOp nOp) {
+              // assert(op.getSrc() == shardOp);
+              op.getConstraintMutable().assign(nOp.getConstraint());
+              op.getSrcMutable().assign(nOp);
             };
 
-            if (!bbOffsVec.empty()) {
-              shardOp->setAttr("subviews", DistSliceAttr::get(
-                                               builder.getContext(), bbOffsVec,
-                                               bbSizesVec, bbStridesVec));
-              shardOp->setAttr("targets",
-                               DistSliceAttr::get(builder.getContext(),
-                                                  tOffsVec, tSizesVec,
-                                                  tStridesVec, tBaseSizesVec));
+            ::imex::dist::ShardOp nShardOp;
 
-              for (auto svOp : subviewOps) {
-                updateSharding(getShardOpOfVal(svOp.getSource()));
+            if (!constraints.empty()) {
+              builder.setInsertionPointAfter(baseIPts[base]);
+              auto bb = builder.create<::imex::dist::BoundingBoxOp>(
+                  shardOp->getLoc(),
+                  ::imex::dist::ShardingConstraintType::get(
+                      builder.getContext()),
+                  ::imex::dist::DistSliceAttr::get(builder.getContext(),
+                                                   bbOffsVec, bbSizesVec,
+                                                   bbStridesVec),
+                  constraints);
+              nShardOp =
+                  ::mlir::cast<::imex::dist::ShardOp>(builder.clone(*shardOp));
+              nShardOp.getConstraintMutable().assign(bb);
+
+              for (auto sv : subviews) {
+                auto svOp = sv.getDefiningOp<::imex::ndarray::SubviewOp>();
+                auto svShardOp = getShardOpOfVal(svOp.getSource());
+                updateSharding(svShardOp, nShardOp);
               }
+              constraints.clear();
+              subviews.clear();
               bbOffsVec.clear();
               bbSizesVec.clear();
               bbStridesVec.clear();
-              tOffsVec.clear();
-              tSizesVec.clear();
-              tStridesVec.clear();
-              tBaseSizesVec.clear();
-              subviewOps.clear();
+              shardOp = nShardOp;
             }
 
             if (auto insertOp =
@@ -574,12 +655,11 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
                       : ::imex::ndarray::InsertSliceOp()) {
               auto destShard = getShardOpOfVal(insertOp.getDestination());
               assert(destShard);
-              builder.setInsertionPoint(destShard);
-              updateSharding(destShard);
+              updateSharding(destShard, nShardOp);
               builder.setInsertionPointAfter(insertOp);
               shardOp =
-                  ::mlir::cast<::mlir::mesh::ShardOp>(builder.clone(*shardOp));
-              builder.setInsertionPoint(shardOp);
+                  ::mlir::cast<::imex::dist::ShardOp>(builder.clone(*shardOp));
+              builder.setInsertionPointAfter(shardOp);
             }
           }
         } // for (auto j = grpP.second.begin(); j != grpP.second.end(); ++j)

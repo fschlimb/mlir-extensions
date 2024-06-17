@@ -43,7 +43,9 @@ namespace imex {
 namespace ndarray {
 class NDArrayType;
 } // namespace ndarray
-namespace dist {} // namespace dist
+namespace dist {
+using ::mlir::DenseI64ArrayAttr;
+} // namespace dist
 } // namespace imex
 
 #include <imex/Dialect/Dist/IR/DistOpsDialect.h.inc>
