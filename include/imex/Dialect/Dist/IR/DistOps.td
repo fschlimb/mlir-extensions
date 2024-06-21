@@ -64,7 +64,7 @@ class Dist_Attr<string attrName, string attrMnemonic, list<Trait> traits = []>
 }
 
 def DistSliceAttr : Dist_Attr<"DistSlice", "dist_slice"> {
-  let summary = "List of offsets, sizes and strides for a slice, with optional base offset and sizes";
+  let summary = "List of offsets, sizes and strides for a number of slices.";
   let parameters = (ins
     ArrayRefParameter<"DenseI64ArrayAttr">:$slcOffsets,
     ArrayRefParameter<"DenseI64ArrayAttr">:$slcSizes,
