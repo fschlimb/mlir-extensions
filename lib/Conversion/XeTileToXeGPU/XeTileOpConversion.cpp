@@ -692,8 +692,7 @@ struct SgLoadTileOpPattern : public XeOneToNConversion<xetile::LoadTileOp> {
 
       auto vectorTy = mlir::VectorType::get(shape, elemTy);
       auto ldOp = rewriter.create<mlir::xegpu::LoadNdOp>(
-          op.getLoc(), vectorTy, src, vnniAttr, transposeAttr,
-          transposeBitWidthAttr, L1, L2, L3);
+          op.getLoc(), vectorTy, src, vnniAttr, transposeAttr, L1, L2, L3);
       if (array_length == 1) {
         xegpuOps.push_back(ldOp);
       } else {

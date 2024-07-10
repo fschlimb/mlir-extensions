@@ -664,7 +664,23 @@ void GPUXToLLVMPass::runOnOperation() {
   mlir::RewritePatternSet patterns(&context);
   mlir::LLVMConversionTarget target(context);
 
+<<<<<<< HEAD
   mlir::populateGpuToLLVMConversionPatterns(converter, patterns);
+=======
+  mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
+  mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
+  mlir::populateVectorToLLVMConversionPatterns(converter, patterns);
+  mlir::populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
+  mlir::populateFuncToLLVMConversionPatterns(converter, patterns);
+  mlir::populateAsyncStructuralTypeConversionsAndLegality(converter, patterns,
+                                                          target);
+
+  //   mlir::populateGpuToLLVMConversionPatterns(
+  //       converter, patterns, mlir::gpu::getDefaultGpuBinaryAnnotation());
+
+  imex::populateControlFlowTypeConversionRewritesAndTarget(converter, patterns,
+                                                           target);
+>>>>>>> 52bc3680 (update llvm sha and make GPU stuff compile (not work))
 
   imex::populateGpuxToLLVMPatternsAndLegality(converter, patterns, target);
 
@@ -706,8 +722,13 @@ void imex::populateGpuxToLLVMPatternsAndLegality(
       // clang-format on
       >(converter);
 
+<<<<<<< HEAD
   patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
       converter, imex::gpuBinaryAttrName);
+=======
+  //   patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
+  //       converter, mlir::gpu::getDefaultGpuBinaryAnnotation());
+>>>>>>> 52bc3680 (update llvm sha and make GPU stuff compile (not work))
 
   target.addIllegalDialect<mlir::gpu::GPUDialect>();
   target.addIllegalDialect<imex::gpux::GPUXDialect>();

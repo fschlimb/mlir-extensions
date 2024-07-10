@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 08a61eb01172054fc5f8c78ff527f01d9768569b
+=======
+abbfdfb47f3312870c8cc57dde7aa8e9fdf17a3f
+>>>>>>> 52bc3680 (update llvm sha and make GPU stuff compile (not work))
