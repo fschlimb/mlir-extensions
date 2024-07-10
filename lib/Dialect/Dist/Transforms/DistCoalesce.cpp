@@ -110,7 +110,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
     } else if (auto op =
                    ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(defOp)) {
       return getArray(op.getDestination());
-    } else if (auto op = ::mlir::dyn_cast<::imex::dist::ShardOp>(defOp)) {
+    } else if (auto op = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(defOp)) {
       return getArray(op.getSrc());
     } else if (auto op = ::mlir::dyn_cast<::mlir::UnrealizedConversionCastOp>(
                    defOp)) {
@@ -127,7 +127,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
 
   /// return true if given op comes from a EWOp and has another EWOp
   /// as its single user.
-  bool is_temp(::imex::dist::ShardOp &op) {
+  bool is_temp(::mlir::mesh::ShardOp &op) {
     if (!op->hasAttr("target") && op->hasOneUse() &&
         ::mlir::isa<::imex::dist::EWBinOp, ::imex::dist::EWUnyOp>(
             *op->user_begin()) &&
@@ -280,15 +280,15 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
 
   /// entry point for back propagation of target shardings.
   void backPropagateSharding(::mlir::IRRewriter &builder,
-                             ::imex::dist::ShardOp op) {
+                             ::mlir::mesh::ShardOp op) {
     ::mlir::Operation *nOp = nullptr;
-    auto target = op.getConstraint();
-    if (!target) {
+    auto sharding = op.getSharding();
+    if (!sharding) {
       return;
     }
     auto defOp = op.getSrc().getDefiningOp();
     if (defOp) {
-      backPropagateSharding(builder, defOp, target, nOp);
+      backPropagateSharding(builder, defOp, sharding, nOp);
       assert(nOp == nullptr);
     }
     return;
@@ -300,18 +300,17 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
   /// propagation barriers (e.g. InsertSliceOps) on the way it updates target
   /// info on SubviewOps and marks shardOps for elimination
   void backPropagateSharding(::mlir::IRRewriter &builder, ::mlir::Operation *op,
-                             ::mlir::Value target, ::mlir::Operation *&nOp) {
+                             ::mlir::Value sharding, ::mlir::Operation *&nOp) {
     nOp = nullptr;
-    if (auto typedOp = ::mlir::dyn_cast<::imex::dist::ShardOp>(op)) {
-      assert(!typedOp.getConstraint() || (false && "not implemented yet"));
-      typedOp.getConstraintMutable().assign(target);
+    if (auto typedOp = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op)) {
+      typedOp.getShardingMutable().assign(sharding);
       op = typedOp.getSrc().getDefiningOp();
       assert(op);
     }
     if (auto typedOp = ::mlir::dyn_cast<::imex::ndarray::EWBinOp>(op)) {
       op = typedOp.getLhs().getDefiningOp();
       if (op) {
-        backPropagateSharding(builder, op, target, nOp);
+        backPropagateSharding(builder, op, sharding, nOp);
       }
       op = typedOp.getRhs().getDefiningOp();
     } else if (auto typedOp = ::mlir::dyn_cast<::imex::ndarray::EWUnyOp>(op)) {
@@ -323,17 +322,17 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       } else {
         op = nullptr;
       }
-    } else if (!::mlir::isa<::imex::dist::ShardOp>(op)) {
+    } else if (!::mlir::isa<::mlir::mesh::ShardOp>(op)) {
       op = nullptr;
     }
     if (op) {
-      backPropagateSharding(builder, op, target, nOp);
+      backPropagateSharding(builder, op, sharding, nOp);
     }
     return;
   }
 
   // return ShardOp that annotates the result of a given op
-  ::imex::dist::ShardOp getShardOp(::mlir::Operation *op) {
+  ::mlir::mesh::ShardOp getShardOp(::mlir::Operation *op) {
     assert(op->hasOneUse() || op->use_empty());
     op = *op->user_begin();
     if (::mlir::isa<::mlir::UnrealizedConversionCastOp>(op)) {
@@ -341,11 +340,11 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       assert(op->hasOneUse());
       op = *op->user_begin();
     }
-    return ::mlir::dyn_cast<::imex::dist::ShardOp>(op);
+    return ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op);
   }
 
   // return ShardOp that annotates the given operand/value
-  ::imex::dist::ShardOp getShardOpOfOperand(::mlir::Value val) {
+  ::mlir::mesh::ShardOp getShardOpOfOperand(::mlir::Value val) {
     auto op = val.getDefiningOp();
     // FIXME as long as we have NDArrays we might meet casts
     if (::mlir::isa<::mlir::UnrealizedConversionCastOp>(op)) {
@@ -354,12 +353,15 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       op = op->getOperand(0).getDefiningOp();
     }
     assert(op->hasOneUse());
-    return ::mlir::dyn_cast<::imex::dist::ShardOp>(op);
+    return ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op);
   }
 
   /// compute target part for a given InsertSliceOp
-  ::mlir::Operation *computeTarget(::mlir::IRRewriter &builder,
-                                   ::imex::ndarray::InsertSliceOp op) {
+  ::imex::dist::TargetOfSliceOp computeTarget(::mlir::IRRewriter &builder,
+                                              ::imex::ndarray::InsertSliceOp op,
+                                              ::mlir::Value sharding) {
+    auto shardingOp =
+        ::mlir::cast<::mlir::mesh::ShardingOp>(sharding.getDefiningOp());
     auto sOffs = op.getStaticOffsets();
     auto sSizes = op.getStaticSizes();
     auto sStrides = op.getStaticStrides();
@@ -370,9 +372,8 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
 
     auto src = getShardOpOfOperand(op.getDestination()).getSrc();
     return builder.create<::imex::dist::TargetOfSliceOp>(
-        op->getLoc(),
-        ::imex::dist::ShardingConstraintType::get(builder.getContext()), src,
-        sOffs, sSizes, sStrides);
+        op->getLoc(), src, sOffs, sSizes, sStrides, shardingOp.getMeshAttr(),
+        shardingOp.getSplitAxes());
   }
 
   // This pass tries to combine multiple ShardOps into one.
@@ -459,12 +460,12 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
         if (auto typedOp =
                 ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(op)) {
           builder.setInsertionPointAfter(baseIPts[base]);
-          auto target = computeTarget(builder, typedOp);
-          baseIPts[base] = target;
           auto srcop =
-              typedOp.getSource().getDefiningOp<::imex::dist::ShardOp>();
+              typedOp.getSource().getDefiningOp<::mlir::mesh::ShardOp>();
           assert(srcop && "InsertSliceOp must have a ShardOp as source");
-          srcop.getConstraintMutable().assign(target->getResult(0));
+          auto target = computeTarget(builder, typedOp, srcop.getSharding());
+          baseIPts[base] = target;
+          srcop.getShardingMutable().assign(target->getResult(0));
           backPropagateSharding(builder, srcop);
         }
       }
@@ -515,14 +516,14 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
             }
           } else {
             // this is no SubViewOp
-            auto updateSharding = [&shardOp](::imex::dist::ShardOp op,
-                                             ::imex::dist::ShardOp nOp) {
+            auto updateSharding = [&shardOp](::mlir::mesh::ShardOp op,
+                                             ::mlir::mesh::ShardOp nOp) {
               // assert(op.getSrc() == shardOp);
               op.getConstraintMutable().assign(nOp.getConstraint());
               op.getSrcMutable().assign(nOp);
             };
 
-            ::imex::dist::ShardOp nShardOp;
+            ::mlir::mesh::ShardOp nShardOp;
 
             // compute bounding box and update ShardOp and SubviewOps
             if (!constraints.empty()) {
@@ -535,7 +536,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
                                                    svSizes, svStrides),
                   constraints);
               nShardOp =
-                  ::mlir::cast<::imex::dist::ShardOp>(builder.clone(*shardOp));
+                  ::mlir::cast<::mlir::mesh::ShardOp>(builder.clone(*shardOp));
               nShardOp.getConstraintMutable().assign(bb);
 
               for (auto sv : subviews) {
@@ -561,7 +562,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
               updateSharding(destShard, nShardOp);
               builder.setInsertionPointAfter(insertOp);
               shardOp =
-                  ::mlir::cast<::imex::dist::ShardOp>(builder.clone(*shardOp));
+                  ::mlir::cast<::mlir::mesh::ShardOp>(builder.clone(*shardOp));
               builder.setInsertionPointAfter(shardOp);
             }
           }

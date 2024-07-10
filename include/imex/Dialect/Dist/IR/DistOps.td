@@ -570,23 +570,26 @@ def ShardOp : Dist_Op<"shard", [Pure,
 }
 
 def TargetOfSliceOp : Dist_Op<"target_of_slice",
-    [SameVariadicOperandSize, Pure]> {
+    [Pure]> {
   let summary = "Compute intersections of a distributed array with a slice.";
   let description = [{
     This operation computes the intersection of the shards of the array and the
     provided slice. The slice is provided as a triplet of offsets, sizes and strides
     (similar to a subview).
 
-    All input and output shapes/offsets/strides are `$array.rank()`-long vectors.
+    All input shapes/offsets/strides are `$array.rank()`-long vectors.
+    The operation produces $array.rank()*split_axes.size() many values.
   }];
 
   let arguments = (ins
     AnyType:$array,
     DenseI64ArrayAttr:$static_offsets,
     DenseI64ArrayAttr:$static_sizes,
-    DenseI64ArrayAttr:$static_strides
+    DenseI64ArrayAttr:$static_strides,
+    FlatSymbolRefAttr:$mesh,
+    Mesh_MeshAxesArrayAttr:$split_axes
   );
-  let results = (outs Dist_ShardingConstraint:$constraint);
+  let results = (outs Variadic<Index>:result);
 
   let assemblyFormat = [{
     $array attr-dict `:` qualified(type($array)) `to` qualified(type(results))
