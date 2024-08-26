@@ -23,6 +23,7 @@
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/Types.h>
 #include <mlir/Interfaces/SideEffectInterfaces.h>
+#include <mlir/Dialect/Mesh/IR/MeshOps.h>
 
 #include <iostream>
 

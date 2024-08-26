@@ -10,7 +10,7 @@
 /// \file
 /// This file implements transforms of the Dist dialect.
 ///
-/// This pass tries to minimize the number of dist::RePartitionOps.
+/// This pass tries to minimize the number of mesh::ShardOps.
 /// Instead of creating a new copy for each repartition, it tries to combine
 /// multiple RePartitionOps into one. For this, it computes the local bounding
 /// box of several uses of repartitioned copies of the same base araay. It
@@ -68,6 +68,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
 
   DistCoalescePass() = default;
 
+#if 0
   // returns true if a Value is defined by any of the given operation types
   template <typename T, typename... Ts>
   static ::mlir::Operation *isDefByAnyOf(const ::mlir::Value &val) {
@@ -98,7 +99,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
   /// Follow def-chain of given Value until hitting a creation function
   /// or array-returning EWBinOp or EWUnyOp et al
   /// @return defining op
-  ::mlir::Operation *getArray(const ::mlir::Value &val) {
+  ::mlir::Operation *getBaseArray(const ::mlir::Value &val) {
     auto defOp = val.getDefiningOp();
     if (isAnyOf<::imex::ndarray::EWBinOp, ::imex::ndarray::EWUnyOp,
                 ::imex::ndarray::ReshapeOp, ::imex::ndarray::CopyOp,
@@ -106,16 +107,16 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
             defOp)) {
       return defOp;
     } else if (auto op = ::mlir::dyn_cast<::imex::ndarray::SubviewOp>(defOp)) {
-      return getArray(op.getSource());
+      return getBaseArray(op.getSource());
     } else if (auto op =
                    ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(defOp)) {
-      return getArray(op.getDestination());
+      return getBaseArray(op.getDestination());
     } else if (auto op = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(defOp)) {
-      return getArray(op.getSrc());
+      return getBaseArray(op.getSrc());
     } else if (auto op = ::mlir::dyn_cast<::mlir::UnrealizedConversionCastOp>(
                    defOp)) {
       if (op.getInputs().size() == 1) {
-        return getArray(op.getInputs().front());
+        return getBaseArray(op.getInputs().front());
       }
       return defOp;
     } else {
@@ -176,7 +177,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
           assert(tOffs.size() == tSizes.size());
           auto dynPtType = cloneWithDynEnv(
               mlir::cast<::imex::ndarray::NDArrayType>(val.getType()));
-          return builder.create<::imex::dist::RePartitionOp>(
+          return builder.create<::imex::mesh::ShardOp>(
               op->getLoc(), dynPtType, val, tOffs, tSizes);
         }
       }
@@ -375,6 +376,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
         op->getLoc(), src, sOffs, sSizes, sStrides, shardingOp.getMeshAttr(),
         shardingOp.getSplitAxes());
   }
+#endif // 0
 
   // This pass tries to combine multiple ShardOps into one.
   // It does not actually erase any ops, but rather annotates some so that
@@ -394,16 +396,13 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
   // 2. group SubviewOps
   // 3. create base ShardOp and update dependent SubviewOps
   void runOnOperation() override {
-
+#if 0
     auto root = this->getOperation();
     ::mlir::IRRewriter builder(&getContext());
     ::mlir::SymbolTableCollection symbolTableCollection;
 
     // back-propagate targets from RePartitionOps
 
-    ::std::set<::imex::dist::RePartitionOp> shardOpsToElimNew;
-    ::mlir::SmallVector<::imex::dist::RePartitionOp> rpOps;
-    ::mlir::SmallVector<::mlir::func::ReturnOp> retOps;
     ::mlir::Operation *firstOp = nullptr;
 
     // find first dist-op
@@ -419,19 +418,6 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       return;
     }
     builder.setInsertionPoint(firstOp);
-
-    // insert temporary casts for block args so that we have a base operation
-    ::mlir::SmallVector<::mlir::UnrealizedConversionCastOp> dummyCasts;
-    for (::mlir::Block &block : root) {
-      for (::mlir::BlockArgument &arg : block.getArguments()) {
-        if (isDist(arg) && !arg.use_empty()) {
-          auto op = builder.create<::mlir::UnrealizedConversionCastOp>(
-              builder.getUnknownLoc(), arg.getType(), arg);
-          arg.replaceAllUsesExcept(op.getResult(0), op);
-          dummyCasts.emplace_back(op);
-        }
-      }
-    }
 
     // find InsertSliceOp and SubviewOp operating on the same base pointer
     // opsGroups holds independent partial operation sequences operating on a
@@ -452,7 +438,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
         val = typedOp.getSource();
       }
       if (val) {
-        auto base = getArray(val);
+        auto base = getBaseArray(val);
         baseIPts.emplace(base, getShardOp(base));
         opsGroups[base].emplace_back(op);
 
@@ -463,10 +449,11 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
           auto srcop =
               typedOp.getSource().getDefiningOp<::mlir::mesh::ShardOp>();
           assert(srcop && "InsertSliceOp must have a ShardOp as source");
+          assert(srcop.getAnnotateForUsers());
           auto target = computeTarget(builder, typedOp, srcop.getSharding());
           baseIPts[base] = target;
-          srcop.getShardingMutable().assign(target->getResult(0));
-          backPropagateSharding(builder, srcop);
+          typedOp.getTargetMutable().assign(target->getResult(0));
+          backPropagateSharding(builder, srcop, target);
         }
       }
     });
@@ -574,12 +561,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
         }
       } // for (auto grpP : opsGroups)
     } // if (!shardOps.empty())
-
-    // Get rid of dummy casts
-    for (auto op : dummyCasts) {
-      op.getResult(0).replaceAllUsesWith(op->getOperand(0));
-      builder.eraseOp(op);
-    }
+#endif // 0
   }
 };
 

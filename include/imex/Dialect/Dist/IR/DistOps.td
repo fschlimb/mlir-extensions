@@ -23,6 +23,7 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/BuiltinTypes.td"
 include "mlir/IR/CommonAttrConstraints.td"
+include "mlir/Dialect/Mesh/IR/MeshBase.td"
 
 // Provide a definition of the 'Dist' dialect in the ODS framework so that we
 // can define our operations.
@@ -589,7 +590,7 @@ def TargetOfSliceOp : Dist_Op<"target_of_slice",
     FlatSymbolRefAttr:$mesh,
     Mesh_MeshAxesArrayAttr:$split_axes
   );
-  let results = (outs Variadic<Index>:result);
+  let results = (outs Variadic<Index>:$result);
 
   let assemblyFormat = [{
     $array attr-dict `:` qualified(type($array)) `to` qualified(type(results))
