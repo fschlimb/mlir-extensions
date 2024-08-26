@@ -363,7 +363,7 @@ public:
                                                     .getIntOrFloatBitWidth() /
                                                 8)));
     Value offsets =
-        rewriter.create<arith::MulIOp>(loc, offsetFactor, adaptor.getOffsets());
+        rewriter.create<arith::MulIOp>(loc, offsetFactor, adaptor.getOffsets()[0]);
     Value payLoad = rewriter.create<arith::AddIOp>(loc, tensorDesc, offsets);
     rewriter.replaceOp(op, payLoad);
     return success();
@@ -397,7 +397,7 @@ public:
                                                     .getIntOrFloatBitWidth() /
                                                 8)));
     Value offsets =
-        rewriter.create<arith::MulIOp>(loc, offsetFactor, adaptor.getOffsets());
+        rewriter.create<arith::MulIOp>(loc, offsetFactor, adaptor.getOffsets()[0]);
     payLoad = rewriter.create<arith::AddIOp>(loc, payLoad, offsets);
     rewriter.replaceOp(op, payLoad);
     return success();
@@ -646,7 +646,7 @@ class LoadStorePrefetchNdToRawSendPattern : public OpConversionPattern<OpType> {
     // To support other bits, we cannot hardcode
     // with i32Type, and need to generalize the logic.
     auto loadOp = llvm::dyn_cast<xegpu::LoadNdOp>(op.getOperation());
-    if (loadOp && transpose && loadOp.getTransposeBitWidth() == 32) {
+    if (loadOp && transpose /* && loadOp.getTransposeBitWidth() == 32 */) {
       // in raw_send msg set vnni effect to false and update data size of
       // payload item to 32 bits
       vnni = false;
@@ -1029,13 +1029,13 @@ public:
     OpBuilder::InsertionGuard guard(rewriter);
     auto func = op->getParentOfType<gpu::GPUFuncOp>();
     rewriter.setInsertionPointAfter(func);
-    auto executionModeAttr = spirv::ExecutionModeAttr::get(
-        rewriter.getContext(), spirv::ExecutionMode::NamedBarrierCountINTEL);
+    // auto executionModeAttr = spirv::ExecutionModeAttr::get(
+    //     rewriter.getContext(), spirv::ExecutionMode::NamedBarrierCountINTEL);
 
-    auto execModeFuncAttr = spirv::ExecutionModeFuncAttributeAttr::get(
-        rewriter.getContext(), executionModeAttr, op.getNbarrierNum());
+    // auto execModeFuncAttr = spirv::ExecutionModeFuncAttributeAttr::get(
+    //     rewriter.getContext(), executionModeAttr, op.getNbarrierNum());
 
-    func->setAttr("spirv.execution_mode", execModeFuncAttr);
+    // func->setAttr("spirv.execution_mode", execModeFuncAttr);
 
     rewriter.eraseOp(op);
     return success();
@@ -1164,24 +1164,24 @@ public:
   }
 };
 
-class CompilerHintToVCPattern
-    : public OpConversionPattern<mlir::xegpu::CompileHintOp> {
-public:
-  using OpConversionPattern<mlir::xegpu::CompileHintOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(mlir::xegpu::CompileHintOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
+// class CompilerHintToVCPattern
+//     : public OpConversionPattern<mlir::xegpu::CompileHintOp> {
+// public:
+//   using OpConversionPattern<mlir::xegpu::CompileHintOp>::OpConversionPattern;
+//   LogicalResult
+//   matchAndRewrite(mlir::xegpu::CompileHintOp op, OpAdaptor adaptor,
+//                   ConversionPatternRewriter &rewriter) const override {
+//     auto loc = op.getLoc();
 
-    std::string funcName = "llvm.genx.fence";
-    Value fence_flag = i8_val(-128);
-    SmallVector<Value> args{fence_flag};
+//     std::string funcName = "llvm.genx.fence";
+//     Value fence_flag = i8_val(-128);
+//     SmallVector<Value> args{fence_flag};
 
-    createFuncCall(rewriter, loc, funcName, TypeRange{}, args, false);
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
+//     createFuncCall(rewriter, loc, funcName, TypeRange{}, args, false);
+//     rewriter.eraseOp(op);
+//     return success();
+//   }
+// };
 
 class FenceToVCPattern : public OpConversionPattern<::mlir::xegpu::FenceOp> {
 public:
@@ -1454,15 +1454,15 @@ struct XeGPUToVCPass : public ::imex::ConvertXeGPUToVCBase<XeGPUToVCPass> {
     // Don't convert "index" to "i64"
     typeConverter.addConversion([&](mlir::IndexType type) { return type; });
 
-    typeConverter.addConversion(
-        [&](xegpu::TensorDescType type) -> ::mlir::Type {
-          if (type.isScattered()) {
-            return ::mlir::VectorType::get(
-                16, ::mlir::IndexType::get(&getContext()));
-          }
-          auto i32Type = ::mlir::IntegerType::get(&getContext(), 32);
-          return ::mlir::VectorType::get(8, i32Type);
-        });
+    // typeConverter.addConversion(
+    //     [&](xegpu::TensorDescType type) -> ::mlir::Type {
+    //       if (type.isScattered()) {
+    //         return ::mlir::VectorType::get(
+    //             16, ::mlir::IndexType::get(&getContext()));
+    //       }
+    //       auto i32Type = ::mlir::IntegerType::get(&getContext(), 32);
+    //       return ::mlir::VectorType::get(8, i32Type);
+    //     });
 
     typeConverter.addConversion([&](::mlir::VectorType type) -> ::mlir::Type {
       // TODO: it looks like needs some improvement for matching upstream
@@ -1497,7 +1497,7 @@ struct XeGPUToVCPass : public ::imex::ConvertXeGPUToVCBase<XeGPUToVCPass> {
     patterns.add<CreateNdDescPattern, CreateDescToVCPattern, DpasPattern,
                  AllocNbarrierToVCPattern, InitNbarrierToVCPattern,
                  NbarrierArriveToVCPattern, NbarrierWaitToVCPattern,
-                 CompilerHintToVCPattern, FenceToVCPattern,
+                 /*CompilerHintToVCPattern,*/ FenceToVCPattern,
                  UpdateNDOffsetToVCPattern, UpdateOffsetOpToVCPattern,
                  SCFYieldOpVCPattern, ElementwiseToVCPattern<arith::MaximumFOp>,
                  ElementwiseToVCPattern<math::ExpOp>>(patterns.getContext());
