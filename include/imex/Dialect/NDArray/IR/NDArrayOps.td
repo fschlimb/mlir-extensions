@@ -622,14 +622,14 @@ def InsertSliceOp : NDArray_OpWithOffsetSizesAndStrides<"insert_slice", [
 
   let extraClassDeclaration = extraBaseClassDeclaration # [{
     /// Returns the source type
-    NDArrayType getSourceType() {
-      auto sourceType = mlir::cast<NDArrayType>(getSource().getType());
+    mlir::RankedTensorType getSourceType() {
+      auto sourceType = mlir::cast<mlir::RankedTensorType>(getSource().getType());
       return sourceType;
     }
 
     /// Returns the destination type
-    NDArrayType getDestinationType() {
-      auto dstType = mlir::cast<NDArrayType>(getDestination().getType());
+    mlir::RankedTensorType getDestinationType() {
+      auto dstType = mlir::cast<mlir::RankedTensorType>(getDestination().getType());
       return dstType;
     }
 
@@ -715,15 +715,15 @@ def ImmutableInsertSliceOp : NDArray_OpWithOffsetSizesAndStrides<"immutable_inse
 
   let extraClassDeclaration = extraBaseClassDeclaration # [{
     /// Returns the source type
-    NDArrayType getSourceType() {
+    mlir::RankedTensorType getSourceType() {
       auto sourceType =
-          mlir::dyn_cast<NDArrayType>(getSource().getType());
+          mlir::dyn_cast<mlir::RankedTensorType>(getSource().getType());
       return sourceType;
     }
 
     /// Returns the destination type
-    NDArrayType getDestinationType() {
-      auto dstType = mlir::cast<NDArrayType>(getDestination().getType());
+    mlir::RankedTensorType getDestinationType() {
+      auto dstType = mlir::cast<mlir::RankedTensorType>(getDestination().getType());
       return dstType;
     }
 
