@@ -161,7 +161,6 @@ struct InsertSliceShardingInterface : public OffsetSizeAndStrideShardingInterfac
     auto sharding = getShardedDimsSizes(svop.getDestination(), svop);
     if(failed(sharding)) return failure();
     maybeInsertSourceShardingAnnotation(sharding.value(), op->getOpOperand(1), b);
-
     return success();
   }
 };
