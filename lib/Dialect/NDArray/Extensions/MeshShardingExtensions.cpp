@@ -106,7 +106,6 @@ FailureOr<MeshSharding> getShardedDimsSizes(Value ary, OffsetSizeAndStrideOpInte
 template<typename T, typename OpType>
 struct OffsetSizeAndStrideShardingInterface
     :  public ShardingInterface::ExternalModel<T, OpType> {
-  using parent = ShardingInterface::ExternalModel<T, OpType>;
   
   SmallVector<mlir::utils::IteratorType> getLoopIteratorTypes(::mlir::Operation *op) const {
     LLVM_DEBUG(DBGS() << "getLoopIteratorTypes\n");

@@ -59,6 +59,41 @@ namespace dist {
 
 namespace {
 
+bool isCreator(::mlir::Operation *op) {
+  return ::mlir::isa<::mlir::tensor::EmptyOp>(op);
+}
+
+bool isElementwise(::mlir::Operation *op) {
+  return ::mlir::isa<::mlir::linalg::AbsOp,
+                    ::mlir::linalg::AddOp,
+                    ::mlir::linalg::CeilOp,
+                    ::mlir::linalg::Conv3DOp,
+                    ::mlir::linalg::CopyOp,
+                    ::mlir::linalg::DivOp,
+                    ::mlir::linalg::DivUnsignedOp,
+                    ::mlir::linalg::ElemwiseBinaryOp,
+                    ::mlir::linalg::ElemwiseUnaryOp,
+                    ::mlir::linalg::ErfOp,
+                    ::mlir::linalg::ExpOp,
+                    ::mlir::linalg::FillOp,
+                    ::mlir::linalg::FillRng2DOp,
+                    ::mlir::linalg::FloorOp,
+                    ::mlir::linalg::LogOp,
+                    ::mlir::linalg::MapOp,
+                    ::mlir::linalg::MaxOp,
+                    ::mlir::linalg::MinOp,
+                    ::mlir::linalg::MulOp,
+                    ::mlir::linalg::NegFOp,
+                    ::mlir::linalg::PowFOp,
+                    ::mlir::linalg::ReciprocalOp,
+                    ::mlir::linalg::RoundOp,
+                    ::mlir::linalg::RsqrtOp,
+                    ::mlir::linalg::SqrtOp,
+                    ::mlir::linalg::SquareOp,
+                    ::mlir::linalg::SubOp,
+                    ::mlir::linalg::TanhOp>(op);
+}
+
 // *******************************
 // ***** Pass infrastructure *****
 // *******************************
@@ -94,36 +129,6 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
   static bool isCreator(::mlir::Operation *op) {
     return op &&
            isAnyOf<::imex::ndarray::LinSpaceOp, ::imex::ndarray::CreateOp>(op);
-  }
-
-  /// Follow def-chain of given Value until hitting a creation function
-  /// or array-returning EWBinOp or EWUnyOp et al
-  /// @return defining op
-  ::mlir::Operation *getBaseArray(const ::mlir::Value &val) {
-    auto defOp = val.getDefiningOp();
-    if (isAnyOf<::imex::ndarray::EWBinOp, ::imex::ndarray::EWUnyOp,
-                ::imex::ndarray::ReshapeOp, ::imex::ndarray::CopyOp,
-                ::imex::ndarray::LinSpaceOp, ::imex::ndarray::CreateOp>(
-            defOp)) {
-      return defOp;
-    } else if (auto op = ::mlir::dyn_cast<::imex::ndarray::SubviewOp>(defOp)) {
-      return getBaseArray(op.getSource());
-    } else if (auto op =
-                   ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(defOp)) {
-      return getBaseArray(op.getDestination());
-    } else if (auto op = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(defOp)) {
-      return getBaseArray(op.getSrc());
-    } else if (auto op = ::mlir::dyn_cast<::mlir::UnrealizedConversionCastOp>(
-                   defOp)) {
-      if (op.getInputs().size() == 1) {
-        return getBaseArray(op.getInputs().front());
-      }
-      return defOp;
-    } else {
-      std::cerr << "oops. Unexpected op found: ";
-      const_cast<::mlir::Value &>(val).dump();
-      assert(false);
-    }
   }
 
   /// return true if given op comes from a EWOp and has another EWOp
@@ -278,62 +283,109 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       }
     }
   }
+#endif
 
-  /// entry point for back propagation of target shardings.
-  void backPropagateSharding(::mlir::IRRewriter &builder,
-                             ::mlir::mesh::ShardOp op) {
-    ::mlir::Operation *nOp = nullptr;
-    auto sharding = op.getSharding();
-    if (!sharding) {
-      return;
+  /// Follow def-chain of given Value until hitting a creation function
+  /// or array-returning EWBinOp or EWUnyOp et al
+  /// @return defining op
+  ::mlir::Operation *getBaseArray(const ::mlir::Value &val) {
+    auto defOp = val.getDefiningOp();
+    assert(defOp || !"Cannot get base array for a null value");
+
+    if (isElementwise(defOp) || isCreator(defOp)) {
+      return defOp;
+    } else if (auto op = ::mlir::dyn_cast<::imex::ndarray::SubviewOp>(defOp)) {
+      return getBaseArray(op.getSource());
+    } else if (auto op =
+                  ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(defOp)) {
+      return getBaseArray(op.getDestination());
+    } else if (auto op = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(defOp)) {
+      // this is the only place where we expect block args
+      return op.getSrc().getDefiningOp() ? getBaseArray(op.getSrc()) : op;
+    } else if (auto op = ::mlir::dyn_cast<::mlir::UnrealizedConversionCastOp>(
+                  defOp)) {
+      if (op.getInputs().size() == 1) {
+        return getBaseArray(op.getInputs().front());
+      }
+      return defOp;
+    } else {
+      std::cerr << "oops. Unexpected op found: ";
+      const_cast<::mlir::Value &>(val).dump();
+      assert(false);
     }
-    auto defOp = op.getSrc().getDefiningOp();
-    if (defOp) {
-      backPropagateSharding(builder, defOp, sharding, nOp);
-      assert(nOp == nullptr);
-    }
-    return;
+
+    return nullptr;
   }
+  
 
   /// The actual back propagation of target parts
   /// if meeting a supported op, recursively gets defining ops and back
   /// propagates as it follows only supported ops, all other ops act as
   /// propagation barriers (e.g. InsertSliceOps) on the way it updates target
   /// info on SubviewOps and marks shardOps for elimination
-  void backPropagateSharding(::mlir::IRRewriter &builder, ::mlir::Operation *op,
-                             ::mlir::Value sharding, ::mlir::Operation *&nOp) {
+  bool backPropagateShardSizes(::mlir::IRRewriter &builder, ::mlir::Operation *op,
+                               const ::mlir::mesh::MeshSharding &sharding,
+                               ::mlir::Operation *&nOp) {
     nOp = nullptr;
+    if (op == nullptr) return false;
+
+    auto assignSharding = [&](::mlir::Operation *op, const ::mlir::mesh::MeshSharding& sh) -> bool {
+      if (auto typedOp = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op)) {
+        ::mlir::mesh::MeshSharding currSharding(typedOp.getSharding());
+        if(currSharding.equalSplitAndPartialAxes(sharding)) {
+          assert(currSharding.getStaticHaloSizes().empty());
+          if(!currSharding.equalHaloAndShardSizes(sharding)) {
+            builder.setInsertionPoint(op);
+            auto newSharding = builder.create<::mlir::mesh::ShardingOp>(op->getLoc(), sh);
+            typedOp.getShardingMutable().assign(newSharding.getResult());
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    bool modified = false;
     if (auto typedOp = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op)) {
-      typedOp.getShardingMutable().assign(sharding);
-      op = typedOp.getSrc().getDefiningOp();
-      assert(op);
-    }
-    if (auto typedOp = ::mlir::dyn_cast<::imex::ndarray::EWBinOp>(op)) {
-      op = typedOp.getLhs().getDefiningOp();
-      if (op) {
-        backPropagateSharding(builder, op, sharding, nOp);
-      }
-      op = typedOp.getRhs().getDefiningOp();
-    } else if (auto typedOp = ::mlir::dyn_cast<::imex::ndarray::EWUnyOp>(op)) {
-      op = typedOp.getSrc().getDefiningOp();
-    } else if (auto typedOp =
-                   ::mlir::dyn_cast<::mlir::UnrealizedConversionCastOp>(op)) {
-      if (typedOp.getInputs().size() == 1) {
-        op = typedOp.getInputs().front().getDefiningOp();
+      if (typedOp.getAnnotateForUsers()) {
+        modified = assignSharding(typedOp, sharding);
+        if (modified) backPropagateShardSizes(builder, typedOp.getSrc().getDefiningOp(), sharding, nOp);
       } else {
-        op = nullptr;
+        auto srcOp = typedOp.getSrc().getDefiningOp();
+        if (srcOp) modified = backPropagateShardSizes(builder, typedOp.getSrc().getDefiningOp(), sharding, nOp);
+        if (modified || !srcOp) assignSharding(typedOp, sharding);
       }
-    } else if (!::mlir::isa<::mlir::mesh::ShardOp>(op)) {
-      op = nullptr;
+    } else if (isElementwise(op) || isCreator(op)) {
+      modified = isCreator(op);
+      for (auto oprnd : op->getOperands()) {
+        if (::mlir::isa<::mlir::RankedTensorType>(oprnd.getType())) {
+          modified |= backPropagateShardSizes(builder, oprnd.getDefiningOp(), sharding, nOp);
+        }
+      }
+    } else if(auto typedOp = ::mlir::dyn_cast<::imex::ndarray::SubviewOp>(op)) {
+      modified = backPropagateShardSizes(builder, typedOp.getSource().getDefiningOp(), sharding, nOp);
     }
-    if (op) {
-      backPropagateSharding(builder, op, sharding, nOp);
-    }
+
+    assert(nOp == nullptr);
+    return modified;
+  }
+
+  /// entry point for back propagation of target shardings.
+  void backPropagateShardSizes(::mlir::IRRewriter &builder,
+                               ::mlir::mesh::ShardOp op) {
+    ::mlir::Operation *nOp = nullptr;
+    auto sharding = op.getSharding();
+    assert(sharding);
+    backPropagateShardSizes(builder, op.getSrc().getDefiningOp(), sharding, nOp);
+    assert(nOp == nullptr);
     return;
   }
 
   // return ShardOp that annotates the result of a given op
   ::mlir::mesh::ShardOp getShardOp(::mlir::Operation *op) {
+    if (auto typedOp = ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op)) {
+      return typedOp;
+    }
     assert(op->hasOneUse() || op->use_empty());
     op = *op->user_begin();
     if (::mlir::isa<::mlir::UnrealizedConversionCastOp>(op)) {
@@ -344,6 +396,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
     return ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op);
   }
 
+#if 0
   // return ShardOp that annotates the given operand/value
   ::mlir::mesh::ShardOp getShardOpOfOperand(::mlir::Value val) {
     auto op = val.getDefiningOp();
@@ -396,28 +449,13 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
   // 2. group SubviewOps
   // 3. create base ShardOp and update dependent SubviewOps
   void runOnOperation() override {
-#if 0
+
     auto root = this->getOperation();
     ::mlir::IRRewriter builder(&getContext());
     ::mlir::SymbolTableCollection symbolTableCollection;
 
     // back-propagate targets from RePartitionOps
 
-    ::mlir::Operation *firstOp = nullptr;
-
-    // find first dist-op
-    root->walk([&](::mlir::Operation *op) {
-      if (::mlir::isa<::imex::dist::DistDialect>(op->getDialect()) ||
-          ::mlir::isa<::mlir::mesh::MeshDialect>(op->getDialect())) {
-        firstOp = op;
-        return ::mlir::WalkResult::interrupt();
-      }
-      return ::mlir::WalkResult::advance();
-    });
-    if (!firstOp) {
-      return;
-    }
-    builder.setInsertionPoint(firstOp);
 
     // find InsertSliceOp and SubviewOp operating on the same base pointer
     // opsGroups holds independent partial operation sequences operating on a
@@ -450,14 +488,14 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
               typedOp.getSource().getDefiningOp<::mlir::mesh::ShardOp>();
           assert(srcop && "InsertSliceOp must have a ShardOp as source");
           assert(srcop.getAnnotateForUsers());
-          auto target = computeTarget(builder, typedOp, srcop.getSharding());
-          baseIPts[base] = target;
-          typedOp.getTargetMutable().assign(target->getResult(0));
-          backPropagateSharding(builder, srcop, target);
+          backPropagateShardSizes(builder, srcop);
         }
       }
     });
+  }
+};
 
+#if 0
     if (!opsGroups.empty()) {
       // outer loop iterates base over base pointers
       for (auto grpP : opsGroups) {
@@ -562,8 +600,6 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       } // for (auto grpP : opsGroups)
     } // if (!shardOps.empty())
 #endif // 0
-  }
-};
 
 } // namespace
 } // namespace dist
