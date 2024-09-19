@@ -396,7 +396,6 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
     return ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op);
   }
 
-#if 0
   // return ShardOp that annotates the given operand/value
   ::mlir::mesh::ShardOp getShardOpOfOperand(::mlir::Value val) {
     auto op = val.getDefiningOp();
@@ -409,6 +408,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
     assert(op->hasOneUse());
     return ::mlir::dyn_cast<::mlir::mesh::ShardOp>(op);
   }
+#if 0
 
   /// compute target part for a given InsertSliceOp
   ::imex::dist::TargetOfSliceOp computeTarget(::mlir::IRRewriter &builder,
@@ -492,115 +492,65 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
         }
       }
     });
-  }
-};
 
-#if 0
-    if (!opsGroups.empty()) {
-      // outer loop iterates base over base pointers
-      for (auto grpP : opsGroups) {
-        if (grpP.second.empty())
-          continue;
-        grpP.second.emplace_back(nullptr);
+    // outer loop iterates base over base pointers
+    for (auto grpP : opsGroups) {
+      if (grpP.second.empty())
+        continue;
 
-        auto &base = grpP.first;
-
-        auto shardOp = getShardOp(base);
-        builder.setInsertionPointAfter(shardOp);
-
-        // find groups operating on the same base, groups are separated by write
-        // operations (InsertSliceOps for now)
-        ::mlir::SmallVector<::mlir::DenseI64ArrayAttr> svOffs, svSizes,
-            svStrides;
-        ::imex::ValVec subviews, constraints;
-
-        for (auto i : grpP.second) {
-          // collect SubviewOps until we meet a InsertSliceOp
-          if (auto subviewOp =
-                  i ? ::mlir::dyn_cast<::imex::ndarray::SubviewOp>(*i)
-                    : ::imex::ndarray::SubviewOp()) {
-            if (subviewOp && !subviewOp->hasAttr("final")) {
-              auto sOffs = subviewOp.getStaticOffsets();
-              auto sSizes = subviewOp.getStaticSizes();
-              auto sStrides = subviewOp.getStaticStrides();
-              assert(
-                  !(::mlir::ShapedType::isDynamicShape(sSizes) ||
-                    ::mlir::ShapedType::isDynamicShape(sOffs) ||
-                    ::mlir::ShapedType::isDynamicShape(sStrides)) ||
-                  (false &&
-                   "SubviewOp must have dynamic offsets, sizes and strides"));
-              auto svShardOp = getShardOp(subviewOp);
-              assert(svShardOp);
-              auto target = svShardOp.getConstraint();
-              assert(target);
-              svOffs.emplace_back(builder.getDenseI64ArrayAttr(sOffs));
-              svSizes.emplace_back(builder.getDenseI64ArrayAttr(sSizes));
-              svStrides.emplace_back(builder.getDenseI64ArrayAttr(sStrides));
-              constraints.emplace_back(target);
-              subviews.emplace_back(subviewOp.getResult());
-            }
-          } else {
-            // this is no SubViewOp
-            auto updateSharding = [&shardOp](::mlir::mesh::ShardOp op,
-                                             ::mlir::mesh::ShardOp nOp) {
-              // assert(op.getSrc() == shardOp);
-              op.getConstraintMutable().assign(nOp.getConstraint());
-              op.getSrcMutable().assign(nOp);
-            };
-
-            ::mlir::mesh::ShardOp nShardOp;
-
-            // compute bounding box and update ShardOp and SubviewOps
-            if (!constraints.empty()) {
-              builder.setInsertionPointAfter(baseIPts[base]);
-              auto bb = builder.create<::imex::dist::BoundingBoxOp>(
-                  shardOp->getLoc(),
-                  ::imex::dist::ShardingConstraintType::get(
-                      builder.getContext()),
-                  ::imex::dist::DistSliceAttr::get(builder.getContext(), svOffs,
-                                                   svSizes, svStrides),
-                  constraints);
-              nShardOp =
-                  ::mlir::cast<::mlir::mesh::ShardOp>(builder.clone(*shardOp));
-              nShardOp.getConstraintMutable().assign(bb);
-
-              for (auto sv : subviews) {
-                auto svOp = sv.getDefiningOp<::imex::ndarray::SubviewOp>();
-                auto svShardOp = getShardOpOfOperand(svOp.getSource());
-                updateSharding(svShardOp, nShardOp);
-              }
-              constraints.clear();
-              subviews.clear();
-              svOffs.clear();
-              svSizes.clear();
-              svStrides.clear();
-              shardOp = nShardOp;
-            }
-
-            // update dependent InsertSliceOp
-            // we also need an explicit ShardOp after a InsertSliceOp
-            if (auto insertOp =
-                    i ? ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(*i)
-                      : ::imex::ndarray::InsertSliceOp()) {
-              auto destShard = getShardOpOfOperand(insertOp.getDestination());
-              assert(destShard);
-              updateSharding(destShard, nShardOp);
-              builder.setInsertionPointAfter(insertOp);
-              shardOp =
-                  ::mlir::cast<::mlir::mesh::ShardOp>(builder.clone(*shardOp));
-              builder.setInsertionPointAfter(shardOp);
-            }
-          }
-        } // for (auto j = grpP.second.begin(); j != grpP.second.end(); ++j)
-
-        // we might have created a spurious ShardOp
-        if (shardOp && shardOp->use_empty()) {
-          builder.eraseOp(shardOp);
+      auto &base = grpP.first;
+      auto shardOp = getShardOp(base);
+      ::mlir::SmallVector<::mlir::mesh::ShardOp> shardOps;
+      ::mlir::ValueRange halos;
+      int numHalos = 0;
+      for (auto axes : shardOp.getSharding().getDefiningOp<::mlir::mesh::ShardingOp>().getSplitAxes()) {
+        if (!axes.empty()) {
+          ++numHalos;
         }
-      } // for (auto grpP : opsGroups)
-    } // if (!shardOps.empty())
-#endif // 0
+      }
+      ::mlir::SmallVector<::mlir::Type> haloResultTypes(numHalos*2, builder.getI64Type());
 
+      for (auto currOp : grpP.second) {
+        // collect SubviewOps until we meet a InsertSliceOp
+        if (auto subviewOp = ::mlir::dyn_cast<::imex::ndarray::SubviewOp>(*currOp)) {
+          if (!subviewOp->hasAttr("final")) {
+            auto sOffs = subviewOp.getStaticOffsets();
+            auto sSizes = subviewOp.getStaticSizes();
+            auto sStrides = subviewOp.getStaticStrides();
+            assert(
+                !(::mlir::ShapedType::isDynamicShape(sSizes) ||
+                  ::mlir::ShapedType::isDynamicShape(sOffs) ||
+                  ::mlir::ShapedType::isDynamicShape(sStrides))
+                && "SubviewOp must have static offsets, sizes and strides");
+            auto svShardingOp = getShardOp(subviewOp).getSharding().getDefiningOp<::mlir::mesh::ShardingOp>();
+            assert(svShardingOp);
+            auto target = svShardingOp.getStaticShardedDimsSizes();
+            assert(!::mlir::ShapedType::isDynamicShape(target) && "ShardOp of Subview must have static sharded dims sizes");
+
+            builder.setInsertionPoint(shardOp);
+            halos = builder.create<::imex::dist::ExtendHaloForSliceOp>(subviewOp->getLoc(), haloResultTypes, halos, sOffs, sSizes, sStrides, target).getResult();
+            shardOps.emplace_back(getShardOpOfOperand(subviewOp.getSource()));
+          }
+        }
+      }
+
+      // Update base sharding with halo sizes
+      auto orgSharding = shardOp.getSharding().getDefiningOp<::mlir::mesh::ShardingOp>();
+      builder.setInsertionPoint(shardOp);
+      auto newSharding = builder.create<::mlir::mesh::ShardingOp>(
+        shardOp->getLoc(), ::mlir::mesh::ShardingType::get(shardOp->getContext()),
+        orgSharding.getMeshAttr(), orgSharding.getSplitAxesAttr(), orgSharding.getPartialAxesAttr(), orgSharding.getPartialTypeAttr(),
+        ::mlir::DenseI64ArrayAttr::get(shardOp->getContext(), {}), ::mlir::ValueRange{},
+        ::mlir::DenseI64ArrayAttr::get(shardOp->getContext(), ::mlir::SmallVector<int64_t>(halos.size(), ::mlir::ShapedType::kDynamic)), halos);
+
+      // update shardOps of dependent SubviewOps
+      for (auto shardOp : shardOps) {
+        shardOp.getShardingMutable().assign(newSharding);
+      }
+      // barriers/halo-updates get inserted when InsertSliceOps (or other write ops) get spmdized
+    } // for (auto grpP : opsGroups)
+  } // runOnOperation
+}; // DistCoalescePass
 } // namespace
 } // namespace dist
 

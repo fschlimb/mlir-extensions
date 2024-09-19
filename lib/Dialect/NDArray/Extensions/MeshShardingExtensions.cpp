@@ -145,6 +145,13 @@ struct SubviewShardingInterface : public OffsetSizeAndStrideShardingInterface<Su
   LogicalResult addShardingAnnotations(::mlir::Operation *op, OpBuilder &b, const ShardingOption &shardingOption) const {
     LLVM_DEBUG(DBGS() << "addShardingAnnotations\n");
     auto svop = cast<SubviewOp>(op);
+    auto srcShardOp = svop.getSource().getDefiningOp<mesh::ShardOp>();
+    if (!srcShardOp) {
+      LLVM_DEBUG(DBGS() << "no sharding on input, bailing out\n");
+      return failure();
+    }
+    maybeInsertSourceShardingAnnotation(srcShardOp.getSharding(), op->getOpOperand(0), b);
+
     auto sharding = getShardedDimsSizes(svop.getSource(), svop);
     if(failed(sharding)) return failure();
     maybeInsertTargetShardingAnnotation(sharding.value(), op->getResult(0), b);

@@ -610,5 +610,27 @@ def BoundingBoxOp : Dist_Op<"bounding_box", [SameVariadicOperandSize, Pure]> {
   }];
 }
 
+def ExtendHaloForSliceOp : Dist_Op<"extend_halo_for_slice", [Pure]> {
+  let summary = "Extend halo for slice.";
+  let description = [{
+    This operation computes the halo required to compute the slice of the array
+    And extends provided halo if necessary.
+    The halo is returned as a flattened array.
+  }];
+
+  let arguments = (ins
+    Variadic<I64>:$halo_sizes,
+    DenseI64ArrayAttr:$static_offsets,
+    DenseI64ArrayAttr:$static_sizes,
+    DenseI64ArrayAttr:$static_strides,
+    DenseI64ArrayAttr:$sharded_dims_sizes
+  );
+  let results = (outs Variadic<I64>:$result);
+
+  let assemblyFormat = [{
+    `[` $halo_sizes `]` attr-dict `:` qualified(type(results))
+  }];
+}
+
 
 #endif // _Dist_OPS_TD_INCLUDED_
