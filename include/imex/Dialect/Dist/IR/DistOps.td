@@ -619,6 +619,8 @@ def ExtendHaloForSliceOp : Dist_Op<"extend_halo_for_slice", [Pure]> {
   }];
 
   let arguments = (ins
+    FlatSymbolRefAttr:$mesh,
+    Mesh_MeshAxesArrayAttr:$split_axes,
     Variadic<I64>:$halo_sizes,
     DenseI64ArrayAttr:$static_offsets,
     DenseI64ArrayAttr:$static_sizes,

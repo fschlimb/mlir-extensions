@@ -493,6 +493,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       }
     });
 
+    ::mlir::SymbolTableCollection symbolTable;
     // outer loop iterates base over base pointers
     for (auto grpP : opsGroups) {
       if (grpP.second.empty())
@@ -526,9 +527,9 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
             assert(svShardingOp);
             auto target = svShardingOp.getStaticShardedDimsSizes();
             assert(!::mlir::ShapedType::isDynamicShape(target) && "ShardOp of Subview must have static sharded dims sizes");
-
+            auto mesh = svShardingOp.getMeshAttr().getValue();
             builder.setInsertionPoint(shardOp);
-            halos = builder.create<::imex::dist::ExtendHaloForSliceOp>(subviewOp->getLoc(), haloResultTypes, halos, sOffs, sSizes, sStrides, target).getResult();
+            halos = builder.create<::imex::dist::ExtendHaloForSliceOp>(subviewOp->getLoc(), haloResultTypes, mesh, svShardingOp.getSplitAxes(), halos, sOffs, sSizes, sStrides, target).getResult();
             shardOps.emplace_back(getShardOpOfOperand(subviewOp.getSource()));
           }
         }

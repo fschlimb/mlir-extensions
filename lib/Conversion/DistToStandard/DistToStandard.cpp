@@ -1397,6 +1397,96 @@ struct LocalBoundingBoxOpConverter
   }
 };
 
+struct ExtendHaloForSliceOpConverter
+    : public ::mlir::OpConversionPattern<::imex::dist::ExtendHaloForSliceOp> {
+  using ::mlir::OpConversionPattern<
+      ::imex::dist::ExtendHaloForSliceOp>::OpConversionPattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::imex::dist::ExtendHaloForSliceOp op,
+                  ::imex::dist::ExtendHaloForSliceOp::Adaptor adaptor,
+                  ::mlir::ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    ::mlir::SymbolTableCollection symbolTable;
+    auto meshOp = ::mlir::mesh::getMesh(op, symbolTable);
+    if (!meshOp) {
+      return ::mlir::failure();
+    }
+    
+    // compute number of shards along split axes
+    ::mlir::SmallVector<int64_t> numShards, shardedDims;
+    for (auto dim = 0; dim<(int64_t)op.getSplitAxes().size(); ++dim) {
+      auto axes = op.getSplitAxes().getAxes()[dim];
+      if(!axes.empty()) {
+        numShards.emplace_back(::mlir::mesh::collectiveProcessGroupSize(axes.asArrayRef(), meshOp));
+        assert(!::mlir::ShapedType::isDynamic(numShards.back()));
+        shardedDims.emplace_back(dim);
+      }
+    }
+
+    // compute sharded dims extends (element count per sharded dim)
+    int64_t curr = 0;
+    auto targetDimsSizes = op.getShardedDimsSizes();
+    ::mlir::SmallVector<int64_t> shardedDimsExtends;
+    for (auto num : numShards) {
+      int64_t extend = 0;
+      for (auto i = 0; i<num; ++i, ++curr) {
+        assert(curr < (int64_t)targetDimsSizes.size());
+        extend += targetDimsSizes[curr];
+      }
+      shardedDimsExtends.emplace_back(extend);
+    }
+
+    // init halo sizes either from input or to 0
+    ::mlir::SmallVector<::imex::EasyI64> haloSizes;
+    auto zero = easyI64(loc, rewriter, 0);
+    auto one = easyI64(loc, rewriter, 1);
+    if (haloSizes.empty()) {
+      haloSizes.resize(numShards.size()*2, zero);
+    } else for (auto sz : op.getHaloSizes()) {
+      haloSizes.emplace_back(easyI64(loc, rewriter, sz));
+    }
+
+    auto getShardDimSize = [](int64_t shard, int64_t numShards, int64_t extend) {
+      return extend / numShards + (shard >= numShards - (extend % numShards) ? 1 : 0);
+    };
+
+    // iterate split axes and compute lower/upper halo bounds for each dim
+    curr = 0;
+    for (size_t dim=0; dim<numShards.size(); ++dim) {
+      auto num = numShards[dim];
+      auto coreOff = zero;
+      auto coreEnd = easyI64(loc, rewriter, getShardDimSize(0, num, shardedDimsExtends[dim]));
+      auto targetOff = easyI64(loc, rewriter, op.getStaticOffsets()[shardedDims[dim]]);
+      auto stride = easyI64(loc, rewriter, op.getStaticStrides()[shardedDims[dim]]);
+      auto targetEnd = targetOff + stride * easyI64(loc, rewriter, targetDimsSizes[curr] - 1) + one;
+
+      for (auto i = 0; i<num; ++i, ++curr) {
+        if (targetDimsSizes[curr] != 0) {
+          auto targetSz = i ? easyI64(loc, rewriter, targetDimsSizes[curr]) : targetEnd;
+          haloSizes[dim] = targetSz.sgt(zero).select(haloSizes[dim].min(coreOff - targetOff), haloSizes[dim]);
+          haloSizes[dim+1] = targetSz.sgt(zero).select(haloSizes[dim+1].max(targetEnd - coreEnd).max(zero), haloSizes[dim+1]);
+          if (i+1 < num) {
+            targetOff = targetOff + stride * easyI64(loc, rewriter, targetDimsSizes[curr]);
+            targetEnd = targetOff + stride * easyI64(loc, rewriter, targetDimsSizes[curr+1] - 1) + one;
+          }
+        }
+        if (i+1 < num) {
+          coreOff = coreEnd;
+          coreEnd = coreOff + easyI64(loc, rewriter, getShardDimSize(i+1, num, shardedDimsExtends[dim]));
+        }
+      }
+    }
+
+    ::imex::ValVec results;
+    for (auto sz : haloSizes) {
+      results.emplace_back(sz.get());
+    }
+    rewriter.replaceOp(op, results);
+    return ::mlir::success();
+  }
+};
+
 /// Convert ::imex::dist::LocalCoreOp
 /// 1. Computes offset and sizes of the local data of src as if subviewed by
 /// provided slice and mapped to provided target.
@@ -1711,7 +1801,8 @@ struct ConvertDistToStandardPass
                 LocalCoreOpConverter, RePartitionOpConverter,
                 ReshapeOpConverter, LocalTargetOfSliceOpConverter,
                 DefaultPartitionOpConverter, LocalOffsetsOfOpConverter,
-                PartsOfOpConverter, DeleteOpConverter, CastElemTypeOpConverter>(
+                PartsOfOpConverter, DeleteOpConverter, CastElemTypeOpConverter,
+                ExtendHaloForSliceOpConverter>(
             typeConverter, &ctxt);
     mlir::scf::populateSCFStructuralTypeConversionsAndLegality(
         typeConverter, patterns, target);

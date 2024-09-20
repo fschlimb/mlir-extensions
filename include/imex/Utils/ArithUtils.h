@@ -275,6 +275,35 @@ inline EasyIdx easyIdx(const mlir::Location &loc, mlir::OpBuilder &builder,
                        ::mlir::getConstantIntValue(value).value());
 }
 
+/// Special EasyVal representing an mlir::I64
+/// Do not use constructors, use easyI64(...) below.
+using EasyI64 = EasyVal<int64_t>;
+
+/// Create I64 Value from MLIR value, potentially by casting
+inline EasyI64 easyI64(const ::mlir::Location &loc, ::mlir::OpBuilder &builder,
+                       const ::mlir::Value &value) {
+  return EasyI64(loc, builder, createCast(loc, builder, value, builder.getI64Type()));
+}
+
+/// Create I64 Value from C++ value
+inline EasyI64 easyI64(const ::mlir::Location &loc, ::mlir::OpBuilder &builder,
+                       int64_t value) {
+  return EasyI64(loc, builder, createInt(loc, builder, value, 64));
+}
+
+/// Create I64 Value from OpFoldResult
+// This is provided as a template because otherwise we get warnings about ISO
+// C++ ambiguity
+template <typename T, typename std::enable_if<std::is_same<
+                          T, ::mlir::OpFoldResult>::value>::type * = nullptr>
+inline EasyI64 easyI64(const mlir::Location &loc, mlir::OpBuilder &builder,
+                       const T &value) {
+  return value.template is<::mlir::Value>()
+             ? easyI64(loc, builder, value.template get<::mlir::Value>())
+             : easyI64(loc, builder,
+                       ::mlir::getConstantIntValue(value).value());
+}
+
 } // namespace imex
 
 #endif // _IMEX_ARITHUTILS_H_
