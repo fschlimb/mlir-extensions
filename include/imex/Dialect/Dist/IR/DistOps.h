@@ -44,8 +44,25 @@ namespace imex {
 namespace ndarray {
 class NDArrayType;
 } // namespace ndarray
+
 namespace dist {
+
 using ::mlir::DenseI64ArrayAttr;
+
+inline auto getBaseShardDimSize(int64_t shard, int64_t numShards, int64_t extend) {
+  return extend / numShards + (shard >= numShards - (extend % numShards) ? 1 : 0);
+};
+
+template<typename T>
+auto getBaseShardDimSize(T shard, T numShards, T extend) {
+  return extend / numShards + shard.sge(numShards - (extend % numShards)).select(1l, 0l);
+};
+
+template<typename T>
+auto getBaseShardDimOff(T shard, T numShards, T extend) {
+  return shard * extend / numShards + (shard - (numShards - (extend % numShards))).max(T(*shard._loc, *shard._builder, 0));
+};
+
 } // namespace dist
 } // namespace imex
 

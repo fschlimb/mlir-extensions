@@ -1439,10 +1439,6 @@ struct ExtendHaloForSliceOpConverter
       }
     }
 
-    auto getBaseShardDimSize = [](int64_t shard, int64_t numShards, int64_t extend) {
-      return extend / numShards + (shard >= numShards - (extend % numShards) ? 1 : 0);
-    };
-
     // iterate split axes and compute lower/upper halo bounds for each dim
     int64_t curr = 0;
     auto targetDimsSizes = op.getShardedDimsSizes();

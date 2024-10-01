@@ -239,10 +239,17 @@ template <typename T> struct EasyVal {
   template <
       typename LHS, typename RHS, typename X = T,
       typename std::enable_if<std::is_same<X, bool>::value>::type * = nullptr>
-  EasyVal<typename LHS::CType> select(RHS const &l, LHS const &r) const {
-    return {*_loc, *_builder,
-            _builder->createOrFold<::mlir::arith::SelectOp>(*_loc, _value,
-                                                            l.get(), r.get())};
+  auto select(RHS const &l, LHS const &r) const {
+    if constexpr(std::is_integral<LHS>::value && std::is_integral<RHS>::value) {
+      return EasyVal<LHS>(*_loc, *_builder,
+              _builder->createOrFold<::mlir::arith::SelectOp>(*_loc, _value,
+                                                              EasyVal<LHS>(*_loc, *_builder, l),
+                                                              EasyVal<RHS>(*_loc, *_builder, r)));
+    } else if constexpr(!(std::is_integral<LHS>::value && std::is_integral<RHS>::value)) {
+      return LHS{*_loc, *_builder,
+              _builder->createOrFold<::mlir::arith::SelectOp>(*_loc, _value,
+                                                              l.get(), r.get())};
+    }
   }
 };
 
