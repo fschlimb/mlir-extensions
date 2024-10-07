@@ -129,7 +129,7 @@ def XeTile : XeTile_Type<"Tile", "tile", [ShapedTypeInterface],
       if (encoding && encoding.getMemoryScope()) {
         auto memoryScope = encoding.getMemoryScope();
         assert(mlir::isa<mlir::IntegerAttr>(memoryScope) &&
-              "Using `getMemorySpaceAsInt` with non-Integer attribute");
+              "Using `getMemoryScopeAsInt` with non-Integer attribute");
         return mlir::cast<mlir::IntegerAttr>(memoryScope).getInt();
       }
       // return default value 0 indicating Global memory

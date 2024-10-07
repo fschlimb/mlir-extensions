@@ -352,8 +352,9 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
         if (modified) backPropagateShardSizes(builder, typedOp.getSrc().getDefiningOp(), sharding, nOp);
       } else {
         auto srcOp = typedOp.getSrc().getDefiningOp();
-        if (srcOp) modified = backPropagateShardSizes(builder, typedOp.getSrc().getDefiningOp(), sharding, nOp);
-        if (modified || !srcOp) assignSharding(typedOp, sharding);
+        if (srcOp && backPropagateShardSizes(builder, typedOp.getSrc().getDefiningOp(), sharding, nOp)) {
+          assignSharding(typedOp, sharding);
+        }
       }
     } else if (isElementwise(op) || isCreator(op)) {
       modified = isCreator(op);
@@ -553,6 +554,20 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
       }
       // barriers/halo-updates get inserted when InsertSliceOps (or other write ops) get spmdized
     } // for (auto grpP : opsGroups)
+
+    mlir::SmallVector<mlir::mesh::ShardingOp> prevShardings;
+    root->walk([&](::mlir::mesh::ShardingOp op) {
+      for(auto prev : prevShardings) {
+        if(mlir::mesh::MeshSharding(op.getResult()) == mlir::mesh::MeshSharding(prev.getResult())) {
+          builder.replaceOp(op, prev.getResult());
+          op = nullptr;
+          break;
+        }
+      }
+      if(op) {
+        prevShardings.emplace_back(op);
+      }
+    });
   } // runOnOperation
 }; // DistCoalescePass
 } // namespace

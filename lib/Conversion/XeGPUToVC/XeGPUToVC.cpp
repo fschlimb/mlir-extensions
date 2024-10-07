@@ -1218,10 +1218,10 @@ public:
     fence_scope = lscFenceScope::GROUP;
 
     switch (op.getMemoryKind()) {
-    case mlir::xegpu::MemoryScope::Global:
+    case mlir::xegpu::MemorySpace::Global:
       sfid = lscSFID::UGM;
       break;
-    case mlir::xegpu::MemoryScope::SLM:
+    case mlir::xegpu::MemorySpace::SLM:
       sfid = lscSFID::TGM;
       break;
     }
