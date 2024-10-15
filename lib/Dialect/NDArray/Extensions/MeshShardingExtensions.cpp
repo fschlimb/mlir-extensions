@@ -13,7 +13,9 @@
 #include "imex/Dialect/Dist/IR/DistOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "llvm/Support/Debug.h"
-// #include <iostream>
+#include <vector>
+#include <string>
+#include <sstream>
 
 #define DEBUG_TYPE "ndarray-sharding-impl"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE << "]: ")
@@ -30,7 +32,7 @@ namespace {
 // Computes result sharding by extending a copy of the input sharding with shard sizes.
 // The shard sizes reflect the sizes resulting from the non-copying subview operation.
 // Requires sharding of input tensor.
-FailureOr<MeshSharding> getShardedDimsSizes(Value ary, OffsetSizeAndStrideOpInterface op) {
+FailureOr<MeshSharding> getShardedDimsOffsetsSharding(Value ary, OffsetSizeAndStrideOpInterface op) {
   SymbolTableCollection symbolTable;
   auto aryType = cast<RankedTensorType>(ary.getType());
   // currently no support for dynamic input shapes
@@ -55,7 +57,7 @@ FailureOr<MeshSharding> getShardedDimsSizes(Value ary, OffsetSizeAndStrideOpInte
 
   auto arySharding = aryShardOp.getSharding().getDefiningOp<mesh::ShardingOp>();
   // currently no support for sharding dims sizes on input
-  if(!arySharding.getStaticShardedDimsSizes().empty())
+  if(!arySharding.getStaticShardedDimsOffsets().empty())
     return failure();
 
   auto mesh = getMesh(arySharding, symbolTable);
@@ -69,8 +71,8 @@ FailureOr<MeshSharding> getShardedDimsSizes(Value ary, OffsetSizeAndStrideOpInte
   auto splitAxes = arySharding.getSplitAxes();
   assert((int64_t)splitAxes.size() <= rank);
   
-  // flattened shard sizes for each dimension (see sharding.sharded_dims_sizes) after subview
-  SmallVector<int64_t> splitSzs;
+  // flattened shard offsets for each dimension (see sharding.sharded_dims_offsets) after subview
+  SmallVector<int64_t> splitOffs;
   // iterate split tensor dimensions
   for(auto dim = 0u; dim<splitAxes.size(); ++dim) {
     auto axes = arySharding.getSplitAxes().getAxes()[dim].asArrayRef();
@@ -90,7 +92,7 @@ FailureOr<MeshSharding> getShardedDimsSizes(Value ary, OffsetSizeAndStrideOpInte
         sz = (num + (strides[dim]-1)) / strides[dim];
         sz = std::min(mx, sz);
       }
-      splitSzs.emplace_back(sz);
+      splitOffs.emplace_back((shard ? splitOffs.back() : 0) + sz);
       // update pos and max for next result shard
       pos += sz * strides[dim];
       mx -= sz;
@@ -101,7 +103,7 @@ FailureOr<MeshSharding> getShardedDimsSizes(Value ary, OffsetSizeAndStrideOpInte
                             arySharding.getPartialAxes().value_or(llvm::ArrayRef<MeshAxis>{}),
                             arySharding.getPartialType().value_or(ReductionKind::Sum),
                             {}, // static halo
-                            splitSzs,
+                            splitOffs,
                             {},
                             {});
 }
@@ -137,6 +139,32 @@ struct OffsetSizeAndStrideShardingInterface
   }
 };
 
+static std::vector<int> convertStringToVector(const std::string &str) {
+    std::vector<int> result;
+    std::stringstream ss(str);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        result.push_back(std::stoi(item));
+    }
+    return result;
+}
+
+static SmallVector<Value> getMyMultiIndex(OpBuilder &b, ::mlir::mesh::MeshOp mesh) {
+  if (auto envStr = getenv("MY_MESH_INDEX")) {
+    auto myIdx = convertStringToVector(envStr);
+    if (myIdx.size() != mesh.getShape().size()) {
+      std::cerr << "MY_MESH_INDEX has wrong size" << std::endl;
+      return {};
+    }
+    SmallVector<Value> idxs;
+    for (auto i : myIdx) {
+      idxs.push_back(easyIdx(mesh.getLoc(), b, i).get());
+    }
+    return idxs;
+  }
+  return b.create<ProcessMultiIndexOp>(mesh.getLoc(), mesh).getResult();
+}
+
 struct SubviewShardingInterface : public OffsetSizeAndStrideShardingInterface<SubviewShardingInterface, imex::ndarray::SubviewOp> {
   LogicalResult addShardingAnnotations(::mlir::Operation *op, OpBuilder &b, const ShardingOption &shardingOption) const {
     LLVM_DEBUG(DBGS() << "addShardingAnnotations\n");
@@ -148,7 +176,7 @@ struct SubviewShardingInterface : public OffsetSizeAndStrideShardingInterface<Su
     }
     maybeInsertSourceShardingAnnotation(srcShardOp.getSharding(), op->getOpOperand(0), b);
 
-    auto sharding = getShardedDimsSizes(svop.getSource(), svop);
+    auto sharding = getShardedDimsOffsetsSharding(svop.getSource(), svop);
     if(failed(sharding)) return failure();
     maybeInsertTargetShardingAnnotation(sharding.value(), op->getResult(0), b);
 
@@ -157,12 +185,12 @@ struct SubviewShardingInterface : public OffsetSizeAndStrideShardingInterface<Su
   
   LogicalResult spmdize(::mlir::Operation *op, ArrayRef<Value> spmdizedOperands, ArrayRef<MeshSharding> operandShardings, ArrayRef<MeshSharding> resultShardings, IRMapping&spmdizationMap, SymbolTableCollection &symbolTableCollection, OpBuilder &builder) const {
     LLVM_DEBUG(DBGS() << "SubviewShardingInterface::spmdize\n");
-    if(!operandShardings[0].getStaticShardedDimsSizes().empty() ||
+    if(!operandShardings[0].getStaticShardedDimsOffsets().empty() ||
        operandShardings[0].getStaticHaloSizes().empty() ||
        mlir::ShapedType::isDynamicShape(operandShardings[0].getStaticHaloSizes()) ||
        resultShardings.size() != 1 ||
-       resultShardings[0].getStaticShardedDimsSizes().empty() ||
-       mlir::ShapedType::isDynamicShape(resultShardings[0].getStaticShardedDimsSizes())) {
+       resultShardings[0].getStaticShardedDimsOffsets().empty() ||
+       mlir::ShapedType::isDynamicShape(resultShardings[0].getStaticShardedDimsOffsets())) {
       return failure();
     }
 
@@ -172,13 +200,11 @@ struct SubviewShardingInterface : public OffsetSizeAndStrideShardingInterface<Su
     auto rank = cast<RankedTensorType>(op->getResult(0).getType()).getRank();
     auto splitAxes = operandShardings[0].getSplitAxes();
     auto mesh = getMesh(op, operandShardings[0].getMeshAttr(), symbolTableCollection);
-    auto myIdx = builder.create<ProcessMultiIndexOp>(mesh.getLoc(), mesh).getResults();
+    auto myIdx = getMyMultiIndex(builder, mesh);
     auto haloSizes = ::imex::getMixedAsValues(loc, builder, operandShardings[0].getDynamicHaloSizes(),
                                             operandShardings[0].getStaticHaloSizes());
-    auto shardedDimsSizes = ::imex::getMixedAsValues(loc, builder, resultShardings[0].getDynamicShardedDimsSizes(),
-                                                   resultShardings[0].getStaticShardedDimsSizes());
-    auto sliceOff = ::imex::getMixedAsValues(loc, builder, resultShardings[0].getDynamicShardedDimsSizes(),
-                                                   resultShardings[0].getStaticShardedDimsSizes());
+    auto shardedDimsOffsets = ::imex::getMixedAsValues(loc, builder, resultShardings[0].getDynamicShardedDimsOffsets(),
+                                                   resultShardings[0].getStaticShardedDimsOffsets());
     auto slcOffs = ::imex::getMixedAsValues(loc, builder, svOp.getOffsets(),
                                           svOp.getStaticOffsets());
     auto slcStrides = ::imex::getMixedAsValues(loc, builder, svOp.getStrides(),
@@ -187,6 +213,8 @@ struct SubviewShardingInterface : public OffsetSizeAndStrideShardingInterface<Su
     auto shardedDim = 0;
     auto zero = easyIdx(loc, builder, 0);
     ::imex::ValVec lShardOffs, lShardSizes;
+    auto targetSzs = builder.create<tensor::FromElementsOp>(loc, shardedDimsOffsets);
+
     for(auto i=0ul; i<(uint64_t)rank; ++i) {
       auto extend = builder.create<::mlir::tensor::DimOp>(loc, spmdizedOperands[0], i);
       if(i > splitAxes.size() || splitAxes[i].empty()) {
@@ -199,32 +227,38 @@ struct SubviewShardingInterface : public OffsetSizeAndStrideShardingInterface<Su
         auto idx = easyIdx(loc, builder, i);
         auto numShards = easyIdx(loc, builder, mesh.getShape()[i]);
         auto myID = easyIdx(loc, builder, myIdx[axis]);
-        auto pos = easyIdx(loc, builder, currPos) + myID;
-
-        auto targetSzs = builder.create<tensor::FromElementsOp>(loc, shardedDimsSizes);
-        auto targetOff = easyI64(loc, builder, 0);
+        auto pos = easyIdx(loc, builder, currPos);
+        auto myPos = pos + myID;
 
         // compute offset of our target shard by summing sizes of "previous" shards (for current dim)
         // the result is in number of elements after slicing, e.g. it does not include stride
-        auto forBody = [&](OpBuilder &builder, Location loc, Value j, ValueRange args) {
-          auto acc = args.front();
-          auto j_ = easyI64(loc, builder, j);
-          auto sz = builder.create<tensor::ExtractOp>(loc, targetSzs, j_.get());
-          acc = builder.create<arith::MulIOp>(loc, acc, sz);
-          builder.create<scf::YieldOp>(loc, acc);
-        };
-        auto end = pos + numShards;
-        auto one = easyI64(loc, builder, 1);
-        auto offset = builder.create<scf::ForOp>(loc, pos.get(), end.get(), one.get(), ValueRange(targetOff.get()), forBody);
-        pos = end;
+        auto one = easyIdx(loc, builder, 1);
+        // auto outInit = builder.create<tensor::FromElementsOp>(loc, RankedTensorType::get({}, builder.getIndexType()), zero.get());
+        // auto subSzs = builder.create<tensor::ExtractSliceOp>(loc, targetSzs, pos.get(), myID.get(), one.get());
+        // auto offsetTnsr = builder.create<linalg::ReduceOp>(loc, subSzs.getResult(), outInit.getResult(), 0,
+        //     [&](OpBuilder &b, Location loc, ValueRange args) {
+        //         auto result = b.create<arith::AddIOp>(loc, args);
+        //         b.create<linalg::YieldOp>(loc, result.getResult());
+        //     });
+        // auto offset = builder.create<tensor::ExtractOp>(loc, offsetTnsr.getResult(0), mlir::ValueRange{});
 
-        // th global offset of the local shard is slice offset plus the computed offset in the target tensor
+        auto nextOff = easyIdx(loc, builder, builder.create<tensor::ExtractOp>(loc, targetSzs, myPos.get()).getResult());
+        auto myOffAndSize = builder.create<::mlir::scf::IfOp>(
+            loc, myID.eq(zero).get(),
+            [&](::mlir::OpBuilder &builder, ::mlir::Location loc) {
+              builder.create<::mlir::scf::YieldOp>(loc, ValueRange{zero.get(), nextOff.get()});
+            },
+            [&](::mlir::OpBuilder &builder, ::mlir::Location loc) {
+              auto myOff = easyIdx(loc, builder, builder.create<tensor::ExtractOp>(loc, targetSzs, (myPos - one).get()).getResult());
+              builder.create<::mlir::scf::YieldOp>(loc, ValueRange{myOff.get(), (nextOff - myOff).get()});
+            });
+
+        // the global offset of the local shard is slice offset plus the computed offset in the target tensor
         // the latter is in number of elements after slicing, which means we need to multiply it by stride
-        targetOff = easyI64(loc, builder, slcOffs[i]) + easyIdx(loc, builder, offset.getResult(0)) * easyI64(loc, builder, slcStrides[i]);
-        auto shardOff = imex::dist::getBaseShardDimOff(idx, numShards, ext) - easyI64(loc, builder, haloSizes[shardedDim*2]);
+        auto targetOff = easyIdx(loc, builder, slcOffs[i]) + easyIdx(loc, builder, myOffAndSize.getResult(0)) * easyIdx(loc, builder, slcStrides[i]);
+        auto shardOff = imex::dist::getBaseShardDimOff(idx, numShards, ext, zero) - easyIdx(loc, builder, haloSizes[shardedDim*2]);
         lShardOffs.emplace_back((targetOff - shardOff).get());
-        auto sz = builder.create<tensor::ExtractOp>(loc, targetSzs, (easyIdx(loc, builder, currPos) + myID).get());
-        lShardSizes.emplace_back(sz);
+        lShardSizes.emplace_back(myOffAndSize.getResult(1));
         currPos += mesh.getShape()[i];
         ++shardedDim;
       }
@@ -239,7 +273,7 @@ struct InsertSliceShardingInterface : public OffsetSizeAndStrideShardingInterfac
   LogicalResult addShardingAnnotations(::mlir::Operation *op, OpBuilder &b, const ShardingOption &shardingOption) const {
     LLVM_DEBUG(DBGS() << "addShardingAnnotations\n");
     auto svop = cast<InsertSliceOp>(op);
-    auto sharding = getShardedDimsSizes(svop.getDestination(), svop);
+    auto sharding = getShardedDimsOffsetsSharding(svop.getDestination(), svop);
     if(failed(sharding)) return failure();
     maybeInsertSourceShardingAnnotation(sharding.value(), op->getOpOperand(1), b);
     return success();
@@ -251,6 +285,8 @@ struct InsertSliceShardingInterface : public OffsetSizeAndStrideShardingInterfac
                                               resultShardings, spmdizationMap,
                                               symbolTableCollection, builder);
     builder.create<mlir::mesh::UpdateHaloOp>(op->getLoc(),
+                                             spmdizedOperands[0].getType(),
+                                             spmdizedOperands[0],
                                              spmdizedOperands[0],
                                              operandShardings[0].getMeshAttr(),
                                              mlir::mesh::MeshAxesArrayAttr::get(op->getContext(), operandShardings[0].getSplitAxes()),

@@ -626,7 +626,7 @@ def ExtendHaloForSliceOp : Dist_Op<"extend_halo_for_slice", [Pure]> {
     DenseI64ArrayAttr:$static_offsets,
     DenseI64ArrayAttr:$static_sizes,
     DenseI64ArrayAttr:$static_strides,
-    DenseI64ArrayAttr:$sharded_dims_sizes
+    DenseI64ArrayAttr:$sharded_dims_offsets
   );
   let results = (outs Variadic<I64>:$result);
 

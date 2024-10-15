@@ -450,8 +450,8 @@ struct SubviewOpConverter
       // create local view
       lViews.emplace_back(rewriter.create<::imex::ndarray::SubviewOp>(
           loc,
-          mlir::dyn_cast<::imex::ndarray::NDArrayType>(lPart.getType())
-              .cloneWithDynDims(),
+          mlir::dyn_cast<::mlir::RankedTensorType>(mlir::dyn_cast<::imex::ndarray::NDArrayType>(lPart.getType())
+              .cloneWithDynDims()),
           lPart, pOffs, pSizes, pStrides));
 
       // update local offset for next part
@@ -1441,7 +1441,7 @@ struct ExtendHaloForSliceOpConverter
 
     // iterate split axes and compute lower/upper halo bounds for each dim
     int64_t curr = 0;
-    auto targetDimsSizes = op.getShardedDimsSizes();
+    auto targetDimsOffs = op.getShardedDimsOffsets();
     for (size_t dim=0; dim<numShards.size(); ++dim) {
       auto num = numShards[dim];
       auto tensorDim = shardedDims[dim];
@@ -1449,16 +1449,18 @@ struct ExtendHaloForSliceOpConverter
       auto baseEnd = easyI64(loc, rewriter, getBaseShardDimSize(0, num, baseShape[tensorDim]));
       auto targetOff = easyI64(loc, rewriter, op.getStaticOffsets()[tensorDim]);
       auto stride = easyI64(loc, rewriter, op.getStaticStrides()[tensorDim]);
-      auto targetEnd = targetOff + stride * easyI64(loc, rewriter, targetDimsSizes[curr] - 1) + one;
+      auto sz = targetDimsOffs[curr];
+      auto targetEnd = targetOff + stride * easyI64(loc, rewriter, sz - 1) + one;
 
       for (auto i = 0; i<num; ++i, ++curr) {
-        if (targetDimsSizes[curr] != 0) {
-          auto targetSz = easyI64(loc, rewriter, targetDimsSizes[curr]);
+        if (sz != 0) {
+          auto targetSz = easyI64(loc, rewriter, sz);
           haloSizes[dim*2] = targetSz.sgt(zero).select(haloSizes[dim*2].max(zero.max(baseOff - targetOff)), haloSizes[dim*2]);
           haloSizes[dim*2+1] = targetSz.sgt(zero).select(haloSizes[dim*2+1].max(zero.max(targetEnd - baseEnd)), haloSizes[dim*2+1]);
           if (i+1 < num) {
+            sz = targetDimsOffs[curr+1] - targetDimsOffs[curr];
             targetOff = targetOff + stride * targetSz;
-            targetEnd = targetOff + stride * easyI64(loc, rewriter, targetDimsSizes[curr+1] - 1) + one;
+            targetEnd = targetOff + stride * easyI64(loc, rewriter, sz - 1) + one;
           }
         }
         if (i+1 < num) {

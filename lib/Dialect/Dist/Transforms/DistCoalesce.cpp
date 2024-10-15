@@ -529,7 +529,7 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
                 && "SubviewOp must have static offsets, sizes and strides");
             auto svShardingOp = getShardOp(subviewOp).getSharding().getDefiningOp<::mlir::mesh::ShardingOp>();
             assert(svShardingOp);
-            auto target = svShardingOp.getStaticShardedDimsSizes();
+            auto target = svShardingOp.getStaticShardedDimsOffsets();
             assert(!::mlir::ShapedType::isDynamicShape(target) && "ShardOp of Subview must have static sharded dims sizes");
             auto mesh = svShardingOp.getMeshAttr().getValue();
             builder.setInsertionPoint(shardOp);

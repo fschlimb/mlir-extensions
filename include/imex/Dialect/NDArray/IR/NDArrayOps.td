@@ -24,6 +24,7 @@ include "mlir/IR/BuiltinTypeInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/Interfaces/ShapedOpInterfaces.td"
+include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/Interfaces/CastInterfaces.td"
 
@@ -322,7 +323,7 @@ def SubviewOp : NDArray_OpWithOffsetSizesAndStrides<"subview", [
     // Build a SubViewOp with mixed static and dynamic entries and custom
     // result type. If the type passed is nullptr, it is inferred.
     OpBuilder<(ins
-      "NDArrayType":$resultType,
+      "::mlir::RankedTensorType":$resultType,
       "::mlir::Value":$source,
       "::mlir::ArrayRef<::mlir::OpFoldResult>":$offsets,
       "::mlir::ArrayRef<::mlir::OpFoldResult>":$sizes,
@@ -340,7 +341,7 @@ def SubviewOp : NDArray_OpWithOffsetSizesAndStrides<"subview", [
     // Build a SubViewOp with static entries and custom
     // result type. If the type passed is nullptr, it is inferred.
     OpBuilder<(ins
-      "NDArrayType":$resultType,
+      "::mlir::RankedTensorType":$resultType,
       "::mlir::Value":$source,
       "::mlir::ArrayRef<int64_t>":$offsets,
       "::mlir::ArrayRef<int64_t>":$sizes,
@@ -358,7 +359,7 @@ def SubviewOp : NDArray_OpWithOffsetSizesAndStrides<"subview", [
     // Build a SubViewOp with dynamic entries and custom
     // result type. If the type passed is nullptr, it is inferred.
     OpBuilder<(ins
-      "NDArrayType":$resultType,
+      "::mlir::RankedTensorType":$resultType,
       "::mlir::Value":$source,
       "::mlir::ValueRange":$offsets,
       "::mlir::ValueRange":$sizes,
@@ -371,8 +372,8 @@ def SubviewOp : NDArray_OpWithOffsetSizesAndStrides<"subview", [
     ::mlir::ShapedType getSourceType();
 
     /// The result of an subview is always a tensor.
-    NDArrayType getType() {
-      return mlir::cast<NDArrayType>(getResult().getType());
+    ::mlir::RankedTensorType getType() {
+      return mlir::cast<::mlir::RankedTensorType>(getResult().getType());
     }
 
     /// Compute the rank-reduction mask that can be applied to map the source
@@ -386,13 +387,13 @@ def SubviewOp : NDArray_OpWithOffsetSizesAndStrides<"subview", [
     /// A subview result type can be inferred, when it is not
     /// rank-reduced, from the source type and the static representation of
     /// offsets, sizes and strides. Special sentinels encode the dynamic case.
-    static NDArrayType inferResultType(
-      NDArrayType sourceType,
+    static ::mlir::RankedTensorType inferResultType(
+      ::mlir::RankedTensorType sourceType,
       ::mlir::ArrayRef<int64_t> staticOffsets,
       ::mlir::ArrayRef<int64_t> staticSizes,
       ::mlir::ArrayRef<int64_t> staticStrides);
-    static NDArrayType inferResultType(
-      NDArrayType sourceType,
+    static ::mlir::RankedTensorType inferResultType(
+      ::mlir::RankedTensorType sourceType,
       ::mlir::ArrayRef<::mlir::OpFoldResult> staticOffsets,
       ::mlir::ArrayRef<::mlir::OpFoldResult> staticSizes,
       ::mlir::ArrayRef<::mlir::OpFoldResult> staticStrides);
@@ -404,13 +405,13 @@ def SubviewOp : NDArray_OpWithOffsetSizesAndStrides<"subview", [
     /// and the desired sizes. In case there are more "ones" among the sizes
     /// than the difference in source/result rank, it is not clear which dims of
     /// size one should be dropped.
-    static NDArrayType inferRankReducedResultType(::mlir::ArrayRef<int64_t> resultShape,
-                                                  NDArrayType sourceType,
+    static ::mlir::RankedTensorType inferRankReducedResultType(::mlir::ArrayRef<int64_t> resultShape,
+                                                  ::mlir::RankedTensorType sourceType,
                                                   ::mlir::ArrayRef<int64_t> staticOffsets,
                                                   ::mlir::ArrayRef<int64_t> staticSizes,
                                                   ::mlir::ArrayRef<int64_t> staticStrides);
-    static NDArrayType inferRankReducedResultType(::mlir::ArrayRef<int64_t> resultShape,
-                                                  NDArrayType sourceType,
+    static ::mlir::RankedTensorType inferRankReducedResultType(::mlir::ArrayRef<int64_t> resultShape,
+                                                  ::mlir::RankedTensorType sourceType,
                                                   ::mlir::ArrayRef<::mlir::OpFoldResult> staticOffsets,
                                                   ::mlir::ArrayRef<::mlir::OpFoldResult> staticSizes,
                                                   ::mlir::ArrayRef<::mlir::OpFoldResult> staticStrides);
@@ -452,7 +453,7 @@ def ExtractSliceOp : NDArray_OpWithOffsetSizesAndStrides<"extract_slice", [
   }];
 
   let arguments = (ins
-    NDArray_NDArray:$source,
+    AnyType:$source,
     Variadic<Index>:$offsets,
     Variadic<Index>:$sizes,
     Variadic<Index>:$strides,
@@ -460,7 +461,7 @@ def ExtractSliceOp : NDArray_OpWithOffsetSizesAndStrides<"extract_slice", [
     DenseI64ArrayAttr:$static_sizes,
     DenseI64ArrayAttr:$static_strides
   );
-  let results = (outs NDArray_NDArray:$result);
+  let results = (outs AnyType:$result);
 
   let assemblyFormat = [{
     $source ``
@@ -482,7 +483,7 @@ def ExtractSliceOp : NDArray_OpWithOffsetSizesAndStrides<"extract_slice", [
     // Build a ExtractSliceOp with mixed static and dynamic entries and custom
     // result type.
     OpBuilder<(ins
-      "NDArrayType":$resultType,
+      "::mlir::RankedTensorType":$resultType,
       "::mlir::Value":$source,
       "::mlir::ArrayRef<::mlir::OpFoldResult>":$offsets,
       "::mlir::ArrayRef<::mlir::OpFoldResult>":$sizes,
@@ -500,7 +501,7 @@ def ExtractSliceOp : NDArray_OpWithOffsetSizesAndStrides<"extract_slice", [
     // Build a ExtractSliceOp with static entries and custom
     // result type.
     OpBuilder<(ins
-      "NDArrayType":$resultType,
+      "::mlir::RankedTensorType":$resultType,
       "::mlir::Value":$source,
       "::mlir::ArrayRef<int64_t>":$offsets,
       "::mlir::ArrayRef<int64_t>":$sizes,
@@ -518,7 +519,7 @@ def ExtractSliceOp : NDArray_OpWithOffsetSizesAndStrides<"extract_slice", [
     // Build a ExtractSliceOp with dynamic entries and custom
     // result type.
     OpBuilder<(ins
-      "NDArrayType":$resultType,
+      "::mlir::RankedTensorType":$resultType,
       "::mlir::Value":$source,
       "::mlir::ValueRange":$offsets,
       "::mlir::ValueRange":$sizes,
@@ -528,14 +529,14 @@ def ExtractSliceOp : NDArray_OpWithOffsetSizesAndStrides<"extract_slice", [
 
   let extraClassDeclaration = extraBaseClassDeclaration # [{
     /// Returns the source type
-    NDArrayType getSourceType() {
-      auto sourceType = mlir::cast<NDArrayType>(getSource().getType());
+    ::mlir::RankedTensorType getSourceType() {
+      auto sourceType = mlir::cast<::mlir::RankedTensorType>(getSource().getType());
       return sourceType;
     }
 
     /// The result is always a tensor.
-    NDArrayType getType() {
-      return mlir::cast<NDArrayType>(getResult().getType());
+    ::mlir::RankedTensorType getType() {
+      return mlir::cast<::mlir::RankedTensorType>(getResult().getType());
     }
 
     /// Return the expected rank of each of the`static_offsets`, `static_sizes`

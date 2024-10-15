@@ -59,8 +59,8 @@ auto getBaseShardDimSize(T shard, T numShards, T extend) {
 };
 
 template<typename T>
-auto getBaseShardDimOff(T shard, T numShards, T extend) {
-  return shard * extend / numShards + (shard - (numShards - (extend % numShards))).max(T(*shard._loc, *shard._builder, 0));
+auto getBaseShardDimOff(T shard, T numShards, T extend, T zero) {
+  return shard * extend / numShards + (shard - (numShards - (extend % numShards))).max(zero);
 };
 
 } // namespace dist

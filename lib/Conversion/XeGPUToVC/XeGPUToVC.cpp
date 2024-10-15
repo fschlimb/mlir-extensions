@@ -363,7 +363,7 @@ public:
                                                     .getIntOrFloatBitWidth() /
                                                 8)));
     Value offsets =
-        rewriter.create<arith::MulIOp>(loc, offsetFactor, adaptor.getOffsets()[0]);
+        rewriter.create<arith::MulIOp>(loc, offsetFactor, adaptor.getOffsets());
     Value payLoad = rewriter.create<arith::AddIOp>(loc, tensorDesc, offsets);
     rewriter.replaceOp(op, payLoad);
     return success();
@@ -397,7 +397,7 @@ public:
                                                     .getIntOrFloatBitWidth() /
                                                 8)));
     Value offsets =
-        rewriter.create<arith::MulIOp>(loc, offsetFactor, adaptor.getOffsets()[0]);
+        rewriter.create<arith::MulIOp>(loc, offsetFactor, adaptor.getOffsets());
     payLoad = rewriter.create<arith::AddIOp>(loc, payLoad, offsets);
     rewriter.replaceOp(op, payLoad);
     return success();
