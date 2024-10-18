@@ -204,8 +204,8 @@ public:
       if (newSourceType.getRank() != sourceType.getRank())
         return mlir::failure();
       mlir::OpBuilder::InsertionGuard g(rewriter);
-      toInsert = rewriter.create<imex::ndarray::CastOp>(
-          insertSliceOp.getLoc(), newSourceType, toInsert);
+      toInsert = rewriter.create<mlir::tensor::CastOp>(insertSliceOp.getLoc(),
+                                                       newSourceType, toInsert);
     }
     rewriter.replaceOpWithNewOp<InsertOpTy>(
         insertSliceOp, insertSliceOp.getDestination(), toInsert, mixedOffsets,

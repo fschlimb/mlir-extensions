@@ -535,22 +535,31 @@ struct DistCoalescePass : public ::imex::DistCoalesceBase<DistCoalescePass> {
             builder.setInsertionPoint(shardOp);
             halos = builder.create<::imex::dist::ExtendHaloForSliceOp>(subviewOp->getLoc(), haloResultTypes, baseShape.getShape(), mesh, svShardingOp.getSplitAxes(), halos, sOffs, sSizes, sStrides, target).getResult();
             shardOps.emplace_back(getShardOpOfOperand(subviewOp.getSource()));
+            // subviewOps.emplace_back(subviewOp);
           }
+        } else if (auto insertSlcOp =
+                       ::mlir::dyn_cast<::imex::ndarray::InsertSliceOp>(
+                           *currOp)) {
+          shardOps.emplace_back(shardOps.emplace_back(
+              getShardOpOfOperand(insertSlcOp.getDestination())));
         }
       }
 
       // Update base sharding with halo sizes
       auto orgSharding = shardOp.getSharding().getDefiningOp<::mlir::mesh::ShardingOp>();
-      builder.setInsertionPoint(shardOp);
+      builder.setInsertionPointAfter(shardOp);
       auto newSharding = builder.create<::mlir::mesh::ShardingOp>(
         shardOp->getLoc(), ::mlir::mesh::ShardingType::get(shardOp->getContext()),
         orgSharding.getMeshAttr(), orgSharding.getSplitAxesAttr(), orgSharding.getPartialAxesAttr(), orgSharding.getPartialTypeAttr(),
         ::mlir::DenseI64ArrayAttr::get(shardOp->getContext(), {}), ::mlir::ValueRange{},
         ::mlir::DenseI64ArrayAttr::get(shardOp->getContext(), ::mlir::SmallVector<int64_t>(halos.size(), ::mlir::ShapedType::kDynamic)), halos);
+      auto newShardOp = builder.create<::mlir::mesh::ShardOp>(
+          shardOp->getLoc(), shardOp, newSharding.getResult());
 
-      // update shardOps of dependent SubviewOps
-      for (auto shardOp : shardOps) {
-        shardOp.getShardingMutable().assign(newSharding);
+      // update shardOps of dependent Subview/InsertSliceOps
+      for (auto svShardOp : shardOps) {
+        svShardOp.getSrcMutable().assign(newShardOp.getResult());
+        svShardOp.getShardingMutable().assign(newSharding);
       }
       // barriers/halo-updates get inserted when InsertSliceOps (or other write ops) get spmdized
     } // for (auto grpP : opsGroups)
