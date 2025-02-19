@@ -115,7 +115,8 @@ static LogicalResult isValid1DBlockSetup(Type elemTy, int elems, Location &loc,
   if (bitWidth < 32)
     return rewriter.notifyMatchFailure(loc, "only 32-bit data supported.");
 
-  if (!llvm::is_contained({1, 2, 3, 4, 8, 16, 32, 64}, elems))
+  auto validChunkSizes = getSupportedChunkSizes(1);
+  if (!llvm::is_contained(validChunkSizes, elems))
     return rewriter.notifyMatchFailure(
         loc, "invalid number of elements. Supports 1, 2, 3, 4, 8, 16, 32, 64.");
 
@@ -139,9 +140,11 @@ static LogicalResult isValidScatterSetup(Type elemTy, int simd_lanes,
   //   return rewriter.notifyMatchFailure(
   //       loc, "A valid simd lane is 16 or 32 for PVC.");
 
-  if (!llvm::is_contained({1, 2, 3, 4, 8, 16, 32, 64}, chunk_size))
+  auto validChunkSizes = getSupportedChunkSizes(simd_lanes);
+  if (!llvm::is_contained(validChunkSizes, chunk_size))
     return rewriter.notifyMatchFailure(
-        loc, "invalid chunk size. Supports 1, 2, 3, 4, 8, 16, 32, 64.");
+        loc, "invalid chunk size. Supports 1, 2, 3, 4, 8"
+             "(and 16, 32, 64 if simd_lanes == 1).");
 
   auto bitWidth = elemTy.getIntOrFloatBitWidth();
 
@@ -724,9 +727,8 @@ auto getElemBitWidth = [](TensorDescType tdescTy) -> unsigned {
 };
 
 auto isLowPrecision = [](TensorDescType tdescTy) -> bool {
-  // Note: Handling for sub 8bit types is unclear so report as false
   auto width = getElemBitWidth(tdescTy);
-  return width < 32 && width >= 8;
+  return width < 32 && width >= 4;
 };
 
 auto getScaled1DTdesc =
@@ -840,7 +842,8 @@ class LoadNdPattern : public OpConversionPattern<LoadNdOp> {
       // TODO: remove this after moving transposeBitWidth into a standalone
       // pass. update the width and pictch of the payload when transposeBitWidth
       // is set, and larger than the element bit width.
-      auto transposeBitWidth = 32; //op.getTransposeBitWidth().value_or(0);
+      auto transposeBitWidth =
+          1; // FIXME op.getTransposeBitWidth().value_or(0);
       auto factor = transposeBitWidth / elemTy.getIntOrFloatBitWidth();
       if (factor > 1) {
         // update the block offset X of the payload, since it is in unit of

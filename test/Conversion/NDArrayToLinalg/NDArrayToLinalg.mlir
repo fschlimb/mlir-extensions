@@ -170,6 +170,43 @@ func.func @test_env() -> (tensor<16x16xf32, #GPUENV>, tensor<256xf32, #GPUENV>) 
 // COM: CHECK-SAME: memref<?xi64, strided<[?], offset: ?>>
 
 // -----
+func.func @test_copy(%a: !ndarray.ndarray<?xi64>) -> !ndarray.ndarray<?xi64> {
+    %0 = ndarray.copy %a: !ndarray.ndarray<?xi64> -> !ndarray.ndarray<?xi64>
+    %1 = ndarray.copy %0: !ndarray.ndarray<?xi64> -> !ndarray.ndarray<?xi64, #region.gpu_env<device = "XeGPU">>
+    %2 = ndarray.copy %1: !ndarray.ndarray<?xi64, #region.gpu_env<device = "XeGPU">> -> !ndarray.ndarray<?xi64>
+    return %0 : !ndarray.ndarray<?xi64>
+}
+// CHECK-LABEL: func.func @test_copy
+// CHECK-NEXT: bufferization.to_tensor
+// CHECK-NEXT: arith.constant 0 : index
+// CHECK-NEXT: tensor.dim
+// CHECK-NEXT: memref.alloc
+// CHECK-NEXT: bufferization.to_memref
+// CHECK-NEXT: region.env_region "protect_copy_op"
+// CHECK-NEXT: memref.copy
+// CHECK-NEXT: }
+// CHECK-NEXT: bufferization.to_tensor
+// CHECK-NEXT: bufferization.to_memref
+// CHECK-NEXT: arith.constant 0 : index
+// CHECK-NEXT: tensor.dim
+// CHECK-NEXT: memref.alloc
+// CHECK-NEXT: bufferization.to_memref
+// CHECK-NEXT: region.env_region "gpu_copy_op"
+// CHECK-NEXT: memref.copy
+// CHECK-NEXT: }
+// CHECK-NEXT: bufferization.to_tensor
+// CHECK-NEXT: arith.constant 0 : index
+// CHECK-NEXT: tensor.dim
+// CHECK-NEXT: memref.alloc
+// CHECK-NEXT: bufferization.to_memref
+// CHECK-NEXT: region.env_region "gpu_copy_op"
+// CHECK-NEXT: memref.copy
+// CHECK-NEXT: }
+// CHECK-NEXT: bufferization.to_tensor
+// CHECK-NEXT: return
+// CHECK-SAME: memref<?xi64, strided<[?], offset: ?>>
+
+// -----
 func.func @test_delete(%arg0: tensor<?xi64>) {
     ndarray.delete %arg0 : tensor<?xi64>
     return

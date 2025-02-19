@@ -1,5 +1,7 @@
+add_subdirectory(ArithToVC)
 add_subdirectory(NDArrayToLinalg)
 add_subdirectory(DropRegions)
+add_subdirectory(RegionParallelLoopToGpu)
 add_subdirectory(GPUToSPIRV)
 add_subdirectory(GPUToGPUX)
 add_subdirectory(GPUXToLLVM)

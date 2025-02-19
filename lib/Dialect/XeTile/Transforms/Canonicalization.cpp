@@ -383,8 +383,8 @@ struct XeTileCanonicalizationPass final
                    VectorBroadcastToXetileBroadcastOpPattern,
                    VectorMultiReductionToXeTileReduce>(context);
 
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns), config))) {
+      if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                       config))) {
         return signalPassFailure();
       }
     }
@@ -398,14 +398,21 @@ struct XeTileCanonicalizationPass final
             builder.create<mlir::UnrealizedConversionCastOp>(loc, type, inputs);
         return cast.getResult(0);
       };
-      typeConverter.addConversion([](mlir::Type type) { return type; });
-      typeConverter.addConversion([](imex::xetile::TileType tileTy) {
-        if (tileTy.getOrder().asArrayRef() == mlir::ArrayRef({0, 1})) {
+
+      auto isValidTile = [&](imex::xetile::TileType type) -> bool {
+        auto order = type.getOrder().asArrayRef();
+        auto memSpace = type.getMemorySpaceAsInt();
+        return memSpace == 3 || order != mlir::ArrayRef({0, 1});
+      };
+
+      typeConverter.addConversion([&](mlir::Type type) { return type; });
+      typeConverter.addConversion([&](imex::xetile::TileType tileTy) {
+        // skip the convertion for SLM descriptors
+        if (!isValidTile(tileTy)) {
           auto newAttr = imex::xetile::XeTileAttr::get(
               tileTy.getContext(), tileTy.getSgMap(), tileTy.getWgMap(),
               mlir::DenseI32ArrayAttr::get(tileTy.getContext(), {1, 0}),
-              tileTy.getInnerBlocks(), tileTy.getMemorySpace(),
-              tileTy.getScatterAttr());
+              tileTy.getMemorySpace(), tileTy.getScatterAttr());
 
           return imex::xetile::TileType::get(
               swapLastTwoElems(tileTy.getShape()), tileTy.getElementType(),
@@ -421,35 +428,31 @@ struct XeTileCanonicalizationPass final
       target.addLegalOp<mlir::memref::ReinterpretCastOp>();
       target.addLegalOp<imex::xetile::TransposeOp>();
       // Col-major tile creattion is not allowed.
-      target.addDynamicallyLegalOp<
-          imex::xetile::InitTileOp>([&](imex::xetile::InitTileOp op) {
-        return op.getType().getOrder().asArrayRef() != mlir::ArrayRef({0, 1});
-      });
+      target.addDynamicallyLegalOp<imex::xetile::InitTileOp>(
+          [&](imex::xetile::InitTileOp op) {
+            return isValidTile(op.getType());
+          });
       // UpdateTileOffsetOp is legal if it does not consume col-major tiles.
-      target.addDynamicallyLegalOp<
-          imex::xetile::UpdateTileOffsetOp>([&](imex::xetile::UpdateTileOffsetOp
-                                                    op) {
-        return op.getType().getOrder().asArrayRef() != mlir::ArrayRef({0, 1});
-      });
+      target.addDynamicallyLegalOp<imex::xetile::UpdateTileOffsetOp>(
+          [&](imex::xetile::UpdateTileOffsetOp op) {
+            return isValidTile(op.getType());
+          });
       // PrefetchTileOp is legal if it does not consume col-major tiles.
       target.addDynamicallyLegalOp<imex::xetile::PrefetchTileOp>(
           [&](imex::xetile::PrefetchTileOp op) {
-            return op.getTile().getType().getOrder().asArrayRef() !=
-                   mlir::ArrayRef({0, 1});
+            return isValidTile(op.getTile().getType());
           });
       // LoadTileOp is legal if it does not consume col-major tiles.
       target.addDynamicallyLegalOp<imex::xetile::LoadTileOp>(
           [&](imex::xetile::LoadTileOp op) {
-            return op.getSource().getType().getOrder().asArrayRef() !=
-                   mlir::ArrayRef({0, 1});
+            return isValidTile(op.getSource().getType());
           });
       // If any iterArg of the forOp is a col-major tile, it is illegal.
       target.addDynamicallyLegalOp<mlir::scf::ForOp>([&](mlir::scf::ForOp op) {
         for (auto arg : op.getRegionIterArgs()) {
           auto tileTy =
               llvm::dyn_cast_if_present<imex::xetile::TileType>(arg.getType());
-          if (tileTy &&
-              tileTy.getOrder().asArrayRef() == mlir::ArrayRef({0, 1}))
+          if (tileTy && !isValidTile(tileTy))
             return false;
         }
         return true;
@@ -460,8 +463,7 @@ struct XeTileCanonicalizationPass final
             for (auto arg : op.getOperands()) {
               auto tileTy = llvm::dyn_cast_if_present<imex::xetile::TileType>(
                   arg.getType());
-              if (tileTy &&
-                  tileTy.getOrder().asArrayRef() == mlir::ArrayRef({0, 1}))
+              if (tileTy && !isValidTile(tileTy))
                 return false;
             }
             return true;
@@ -487,8 +489,8 @@ struct XeTileCanonicalizationPass final
       config.strictMode = mlir::GreedyRewriteStrictness::ExistingAndNewOps;
       patterns.add<RemoveRedundantTransposeOpPattern>(context);
 
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns), config))) {
+      if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                       config))) {
         return signalPassFailure();
       }
     }
