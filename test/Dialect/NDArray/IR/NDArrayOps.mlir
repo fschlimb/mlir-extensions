@@ -100,3 +100,12 @@ func.func @test_castelem(%arg0: tensor<5xi64>) -> tensor<5xi32> {
 // CHECK-LABEL: func.func @test_castelem
 // CHECK: [[V0:%.*]] = ndarray.cast_elemtype
 // CHECK-NEXT: return [[V0]] : tensor<5xi32>
+
+// -----
+func.func @test_permute_dims(%arg0: tensor<?x?x?xi64>) -> tensor<?x?x?xi64> {
+    %0 = ndarray.permute_dims %arg0 [0, 1, 2] : tensor<?x?x?xi64> -> tensor<?x?x?xi64>
+    return %0 : tensor<?x?x?xi64>
+}
+// CHECK-LABEL: func.func @test_permute_dims
+// CHECK: [[V0:%.*]] = ndarray.permute_dims
+// CHECK-NEXT: return [[V0]] : tensor<?x?x?xi64>

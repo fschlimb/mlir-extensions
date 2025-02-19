@@ -689,6 +689,97 @@ struct ReshapeShardingInterface
     return {rank, utils::IteratorType::parallel};
   }
 };
+
+//===----------------------------------------------------------------------===//
+// PermuteDimsShardingInterface
+//===----------------------------------------------------------------------===//
+
+struct PermuteDimsShardingInterface
+    : public BaseShardingInterface<PermuteDimsShardingInterface,
+                                   imex::ndarray::PermuteDimsOp> {
+
+  FailureOr<ShardingOption>
+  getShardingOption(::mlir::Operation *op,
+                    ArrayRef<MeshSharding> operandShardings,
+                    ArrayRef<MeshSharding> resultShardings) const {
+    auto getShardingArray = [](ArrayRef<MeshSharding> shardings) {
+      ShardingArray axesArray(shardings[0].getSplitAxes().size());
+      for (auto [i, axes] : llvm::enumerate(shardings[0].getSplitAxes())) {
+        axesArray[i].append(axes.asArrayRef().begin(), axes.asArrayRef().end());
+      }
+      return axesArray;
+    };
+    if (!operandShardings.empty()) {
+      return ShardingOption(getShardingArray(operandShardings),
+                            operandShardings.front().getMeshAttr());
+    }
+    if (!resultShardings.empty()) {
+      return ShardingOption(getShardingArray(resultShardings),
+                            operandShardings.front().getMeshAttr());
+    }
+    return failure();
+  }
+
+  LogicalResult
+  addShardingAnnotations(::mlir::Operation *op, OpBuilder &b,
+                         const ShardingOption &shardingOption) const {
+    auto pdop = cast<PermuteDimsOp>(op);
+    auto srcShardOp = pdop.getSource().getDefiningOp<mesh::ShardOp>();
+    mlir::mesh::MeshSharding srcSharding;
+
+    if (srcShardOp) {
+      srcSharding = srcShardOp.getSharding();
+    } else {
+      LLVM_DEBUG(DBGS() << "no sharding on input, using default\n");
+      SmallVector<MeshAxesAttr> splitAxes;
+      for (const auto &v : shardingOption.shardingArray) {
+        splitAxes.emplace_back(MeshAxesAttr::get(op->getContext(), v));
+      }
+      srcSharding = mlir::mesh::MeshSharding::get(shardingOption.mesh, splitAxes);
+    }
+    maybeInsertSourceShardingAnnotation(srcSharding, op->getOpOperand(0), b);
+
+    mlir::mesh::MeshSharding dstSharding;
+    {
+      SmallVector<MeshAxesAttr> splitAxes;
+      const auto axes = pdop.getAxes();
+      for (size_t i = 0; i < axes.size(); ++i) {
+        splitAxes.emplace_back(srcSharding.getSplitAxes()[axes[i]]);
+      }
+      dstSharding = std::move(mlir::mesh::MeshSharding::get(srcSharding.getMeshAttr(), splitAxes));
+    }
+    maybeInsertTargetShardingAnnotation(dstSharding, op->getOpResult(0), b);
+
+    return success();
+  }
+
+  LogicalResult spmdize(::mlir::Operation *op, ArrayRef<Value> spmdizedOperands,
+                        ArrayRef<MeshSharding> operandShardings,
+                        ArrayRef<MeshSharding> resultShardings,
+                        IRMapping &spmdizationMap,
+                        SymbolTableCollection &symbolTableCollection,
+                        OpBuilder &builder) const {
+    // if (resultShardings.size() != 1) {
+    //   return failure();
+    // }
+    // auto typedOp = cast<imex::ndarray::PermuteDimsOp>(op);
+    // auto shp =
+    // cast<RankedTensorType>(typedOp.getSource().getType()).getShape(); auto
+    // offSzStr = getLocalOffSzAndStrFromSlice(
+    //     typedOp, shp, operandShardings[0], resultShardings[0],
+    //     operandShardings[0], symbolTableCollection, builder);
+    // if (failed(offSzStr)) {
+    //   return failure();
+    // }
+    // auto &[lShardOffs, lShardSizes, lShardStrides] = offSzStr.value();
+    // auto newSubview = builder.create<imex::ndarray::PermuteDimsOp>(
+    //     op->getLoc(), spmdizedOperands[0], lShardOffs, lShardSizes,
+    //     lShardStrides);
+    // spmdizationMap.map(op->getResult(0), newSubview.getResult());
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -708,6 +799,7 @@ void registerShardingInterfaceExternalModels(mlir::DialectRegistry &registry) {
         InsertSliceOp::attachInterface<InsertSliceShardingInterface>(*ctx);
         LinSpaceOp::attachInterface<LinspaceShardingInterface>(*ctx);
         ReshapeOp::attachInterface<ReshapeShardingInterface>(*ctx);
+        PermuteDimsOp::attachInterface<PermuteDimsShardingInterface>(*ctx);
         registerTrivial<CopyOp, DeleteOp, CastElemTypeOp>(ctx);
       });
 }

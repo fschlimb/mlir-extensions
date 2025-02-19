@@ -43,3 +43,27 @@ func.func @test_linspace() -> tensor<?xi64> {
 // CHECK-SAME: tensor<4xi64>
 // CHECK-NEXT: tensor.cast
 // CHECK-SAME: tensor<?xi64>
+
+func.func @test_permute_dims_cast(%arg0: tensor<3x4x5xi64>) -> tensor<?x?x?xi64> {
+    %0 = ndarray.permute_dims %arg0 [2, 1, 0] : tensor<3x4x5xi64> -> tensor<?x?x?xi64>
+    return %0 : tensor<?x?x?xi64>
+}
+// CHECK-LABEL: func.func @test_permute_dims_cast
+// CHECK: ndarray.permute_dims
+// CHECK-SAME: tensor<3x4x5xi64> -> tensor<5x4x3xi64>
+// CHECK-NEXT: tensor.cast
+
+func.func @test_permute_dims_identity1(%arg0: tensor<3x4x5xi64>) -> tensor<?x?x?xi64> {
+    %0 = ndarray.permute_dims %arg0 [0, 1, 2] : tensor<3x4x5xi64> -> tensor<?x?x?xi64>
+    return %0 : tensor<?x?x?xi64>
+}
+// CHECK-LABEL: func.func @test_permute_dims_identity1
+// CHECK: tensor.cast %arg0 : tensor<3x4x5xi64> to tensor<?x?x?xi64>
+// CHECK-NOT: ndarray.permute_dims
+
+func.func @test_permute_dims_identity2(%arg0: tensor<3x4x5xi64>) -> tensor<3x4x5xi64> {
+    %0 = ndarray.permute_dims %arg0 [0, 1, 2] : tensor<3x4x5xi64> -> tensor<3x4x5xi64>
+    return %0 : tensor<3x4x5xi64>
+}
+// CHECK-LABEL: func.func @test_permute_dims_identity2
+// CHECK-NOT: ndarray.permute_dims

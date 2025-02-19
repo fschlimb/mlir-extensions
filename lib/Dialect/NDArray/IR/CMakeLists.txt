@@ -5,6 +5,7 @@ add_imex_dialect_library(IMEXNDArrayDialect
   LinSpaceOp.cpp
   DeleteOp.cpp
   CastElemTypeOp.cpp
+  PermuteDimsOp.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/mlir/Dialect/NDArray
