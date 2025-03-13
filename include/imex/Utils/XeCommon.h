@@ -27,6 +27,7 @@
 #include <mlir/IR/Value.h>
 #include <mlir/Transforms/DialectConversion.h>
 #include <mlir/Transforms/OneToNTypeConversion.h>
+
 using namespace mlir::xegpu;
 
 namespace imex {
@@ -44,7 +45,21 @@ int getHeightForSLMBlock(llvm::ArrayRef<int64_t> shape, int width,
                          int vnniFactor, bool colMajor);
 
 // a helper util to check whether the tile type is supported
-// for optimal SLM access lowering.
+// for optimal SLM access lowering. It currently has to meet
+// the following conditions:
+//   tileShape[1] % 16 == 0
+//   slmShape[0] % tileShape[0] == 0
+//   slmShape[1] % tileShape[1] == 0
+//   TileOffset[0] % tileShape[0] == 0
+//   TileOffset[1] % tileShape[1] == 0
+//
+//   regular tile (tile without order attribute)
+//   tileShape[0] x tileShape[1] % 64 == 0 (in bytes) to work
+//   tileShape[0] x tileShape[1] % 256 == 0 (in bytes) for best performance
+//
+//   transposed tile (tile with order attribute)
+//   tileShape[0] % vnni == 0 to work
+//   tileShape[0] % (8 * vnni) == 0 for best performance.
 bool isSupportedOptimalSLMAccess(xetile::TileType tileTy);
 
 // this method computes the vnni factor for the given element type.
@@ -69,15 +84,6 @@ applyVnniTransform(mlir::OpBuilder &builder,
 // 16, 32, and 64 are only available if simdLanes == 1.
 llvm::SmallVector<int> getSupportedChunkSizes(int simdlanes);
 
-using PackFuncTy = std::function<mlir::TypedValue<mlir::VectorType>(
-    mlir::Value, mlir::Value, mlir::Location, mlir::OpBuilder &)>;
-
-// A wrapper function to merge small vectors into a big one. It takes a
-// range of mlir::Value objects with mlir::VectorType, and merge them
-// into a big vector using the provided transformation function.
-mlir::Value packVectorsWith(mlir::ValueRange ins, PackFuncTy op,
-                            mlir::Location loc, mlir::OpBuilder &builder);
-
 // Combine vectors vertically while keeping the logical data layout.
 // As an example, given two vectors (2x4xf16) p and q, it will merge
 // them in to a 4x4xf16 vector.
@@ -90,30 +96,20 @@ mlir::TypedValue<mlir::VectorType> stack(mlir::Value vecUp, mlir::Value vecDown,
                                          mlir::Location loc,
                                          mlir::OpBuilder &builder);
 
-// merge vectors horizontally while keep the logical data layout.
-// 1 2 3 4   +    10 11 12   =   1 2 3 4 10 11 12
-// 5 6 7 8        13 14 15       5 6 7 8 13 14 15
-// since there is no direct op in mlir exists, we will
-// using ShapeCast and Shuffle to mimic it. It comes with
-// cost of complex shuffle masks. the mask for the above one
-// will be like this: 0 1 2 3  8  9 10
-//                    4 5 6 7 11 12 13
-mlir::TypedValue<mlir::VectorType> concat(mlir::Value lhs, mlir::Value rhs,
-                                          mlir::Location loc,
-                                          mlir::OpBuilder &builder);
-
 // It checks each GPUFuncOp in the module to see
 // whether they have arguments and outputs with
 // xetile.TileType. They are currently not supported yet.
 bool isSupportedModule(mlir::gpu::GPUModuleOp mod);
 
-int getOperandIndex(mlir::Operation *op, mlir::Value operand);
+llvm::SmallVector<int64_t> getOperandIndices(mlir::Operation *op,
+                                             mlir::Value operand);
 
 // Obtain the index of the result in the operation. If the result is not found,
 // return -1.
 int getResultIndex(mlir::Operation *op, mlir::Value result);
 
-mlir::BlockArgument getArgForOperand(mlir::scf::ForOp &op, mlir::Value operand);
+llvm::SmallVector<mlir::BlockArgument> getArgsForOperand(mlir::scf::ForOp &op,
+                                                         mlir::Value operand);
 
 mlir::ValueRange buildUnrealizedCast(mlir::OpBuilder &builder,
                                      mlir::TypeRange resultTypes,
@@ -147,8 +143,9 @@ public:
             Usage[op] |= (uint)UsageType::OTHER;
           } else if (auto forOp =
                          llvm::dyn_cast_if_present<mlir::scf::ForOp>(user)) {
-            auto arg = getArgForOperand(forOp, curr);
-            q.push_back(arg);
+            // we need to check all ForOp arguments for using initTileOp result
+            auto args = getArgsForOperand(forOp, curr);
+            q.insert(q.end(), args.begin(), args.end());
           }
         }
       }
@@ -161,7 +158,10 @@ public:
         auto curr = q.pop_back_val();
         for (mlir::Operation *user : curr.getUsers()) {
           if (auto mma = llvm::dyn_cast_if_present<xetile::TileMMAOp>(user)) {
-            auto idx = getOperandIndex(mma, curr);
+            auto opIndices = getOperandIndices(mma, curr);
+            assert(opIndices.size() == 1 &&
+                   "Only MMA operations with non-equal ops supported");
+            auto idx = opIndices[0];
             if (idx == 0)
               Usage[op] |= (uint)UsageType::DPAS_A;
             else if (idx == 1)

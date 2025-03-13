@@ -268,7 +268,7 @@ struct CoalesceShardOpsPass
   static auto getBaseShardDimSize(T shard, T numShards, T extend) {
     return extend / numShards +
            shard.sge(numShards - (extend % numShards)).select(1l, 0l);
-  }
+  };
 
   static auto getBaseShardDimSize(int64_t shard, int64_t numShards,
                                   int64_t extend) {
@@ -325,7 +325,8 @@ struct CoalesceShardOpsPass
                              getBaseShardDimSize(0, num, baseShape[tensorDim]));
       auto targetOff = easyI64(loc, rewriter, staticOffsets[tensorDim]);
       auto stride = easyI64(loc, rewriter, staticStrides[tensorDim]);
-      auto sz = staticTargetOffsets[++curr]; // ++curr to skip the first offset
+      assert(staticTargetOffsets[curr] == 0);
+      auto sz = staticTargetOffsets[++curr]; // first offset is always 0
       auto targetEnd =
           targetOff + zero.max(stride * easyI64(loc, rewriter, sz - 1) + one);
 
@@ -341,6 +342,7 @@ struct CoalesceShardOpsPass
               haloSizes[dim * 2 + 1]);
         }
         if (i + 1 >= num) {
+          ++curr;
           break;
         }
         if (sz != 0) {

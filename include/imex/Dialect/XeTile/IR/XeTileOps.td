@@ -18,6 +18,7 @@ include "imex/Dialect/XeTile/IR/XeTileDialect.td"
 include "imex/Dialect/XeTile/IR/XeTileTypes.td"
 include "imex/Dialect/XeTile/IR/XeTileAttrs.td"
 
+include "mlir/Dialect/Arith/IR/ArithBase.td"
 include "mlir/Dialect/Vector/IR/VectorAttributes.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 
@@ -230,7 +231,7 @@ def XeTile_InitTileOp : XeTile_Op<"init_tile", [Pure, AttrSizedOperandSegments,
             int64_t offset;
             auto memrefType = mlir::dyn_cast<mlir::MemRefType>(getSourceType());
             assert(mlir::succeeded(
-                       mlir::getStridesAndOffset(memrefType, strides, offset)) &&
+                       memrefType.getStridesAndOffset(strides, offset)) &&
                    "Failed to get strides and offset. Invalid source memref.");
             // Reuse the op storage.
             setConstStrides(strides);
@@ -326,7 +327,7 @@ def XeTile_LoadTileOp : XeTile_Op<"load_tile", [
                 auto int32Zero = mlir::IntegerAttr::get(mlir::IntegerType::get((*this).getContext(), 32), 0);
                 return getPadding().value_or(int32Zero);
             }
-            auto float32Zero = mlir::FloatAttr::get(mlir::FloatType::getF32((*this).getContext()), 0.0);
+            auto float32Zero = mlir::FloatAttr::get(mlir::Float32Type::get((*this).getContext()), 0.0);
             return getPadding().value_or(float32Zero);
         }
     }];
@@ -362,6 +363,8 @@ def XeTile_StoreTileOp : XeTile_Op<"store_tile", [
     let assemblyFormat = [{
         $value`,`` `$tile attr-dict `:` qualified(type($value)) `,` qualified(type($tile))
     }];
+
+    let hasVerifier = 1;
 }
 
 def XeTile_PrefetchTileOp : XeTile_Op<"prefetch_tile", []> {
@@ -486,8 +489,8 @@ def XeTile_UpdateTileOffsetOp : XeTile_Op<"update_tile_offset", [AttrSizedOperan
     }];
 }
 
-def XeTile_AtomicRMWOp : XeTile_Op<"atomic_rmw", []> {
-    let summary = "performs  a read modify write operation that is free from data races.";
+def XeTile_AtomicRMWOp : XeTile_Op<"atomic_rmw", [MemoryEffects<[MemWrite]>]> {
+    let summary = "performs a read modify write operation that is free from data races.";
     let description = [{
         This operation performs a atomic read-modify-write on the memroy location
         specified by the tile. Operation reuses the arith dialect attribute
@@ -499,7 +502,7 @@ def XeTile_AtomicRMWOp : XeTile_Op<"atomic_rmw", []> {
                 vector<8x16xbf16>, tile<8x16xbf16> -> vector<8x16xbf16>
         ```
     }];
-    let arguments = (ins XeTile_AtomicRMWKindAttr:$kind,
+    let arguments = (ins AtomicRMWKindAttr:$kind,
                         XeTile_2DVector:$value,
                         XeTile:$tile);
     let results = (outs XeTile_2DVector:$result);
@@ -569,6 +572,8 @@ def XeTile_ConvertLayoutOp: XeTile_Op<"convert_layout", [AllTypesMatch<["source"
     let assemblyFormat = [{
         $source attr-dict `:` type($source)
     }];
+
+    let hasVerifier = 1;
 }
 
 def XeTile_LoadGatherOp: XeTile_Op<"load", [AllElementTypesMatch<["tile", "value"]>,

@@ -53,10 +53,25 @@ static bool isColumnMajor(mlir::AffineMap layoutMap) {
 // Helper to check if given OpFoldResult is a constant.
 static bool isConstantIndex(mlir::OpFoldResult value) {
   // If the value is an attribute, then it is a constant.
-  if (value.is<mlir::Attribute>())
+  if (llvm::isa<mlir::Attribute>(value))
     return true;
-  return value.get<mlir::Value>().getDefiningOp<mlir::arith::ConstantOp>() !=
-         nullptr;
+  return llvm::cast<mlir::Value>(value)
+             .getDefiningOp<mlir::arith::ConstantOp>() != nullptr;
+}
+
+// check whether the given shape can be perfectly distributed to each subgroup.
+// If so return true, otherwise return false.
+static bool isEvenDistributed(llvm::ArrayRef<int64_t> shape,
+                              xetile::WorkGroupMapAttr attr) {
+  assert(attr && "workgroup map attribute is missing.");
+  auto data = attr.getSgData().asArrayRef();
+  auto layout = attr.getSgLayout().asArrayRef();
+  for (auto [s, d, l] : llvm::zip_equal(shape, data, layout)) {
+    // check s % (d * l) != 0
+    if (s % d != 0 || (s / d) % l != 0)
+      return false;
+  }
+  return true;
 }
 
 mlir::LogicalResult InitTileOp::verify() {
@@ -93,29 +108,13 @@ mlir::LogicalResult InitTileOp::verify() {
     return emitOpError("dynamic sizes are not allowed with a static "
                        "shaped memref as source");
 
-  // If the source is a memref with dynamic sizes, then dynamic size
-  // arguments must be present.
-  if (isSourceMemRef() && !sourceMemRefHasStaticShape() &&
-      getMixedSizes().size() != 2)
-    return emitOpError("memref with a dynamic shape is used as source but "
-                       "dynamic shape argument missing or it is not 2D");
-
-  // If the source is a memref with dynamic sizes, then a dynamic stride
-  // arguments must be present.
-  if (isSourceMemRef() && !sourceMemRefHasStaticShape() &&
-      getMixedStrides().size() != 2)
-    return emitOpError("memref with a dynamic shape is used as source but "
-                       "dynamic strides argument missing or it is not 2D");
-
-  // if the source is an address, the dynamic sizes must be 2D
-  if (isSourceInteger() && getMixedSizes().size() != 2)
-    return emitOpError("address is used as source but dynamic shape argument "
-                       "is missing or it is not 2D");
-
-  // if the source is an address, dynamic strides must be 2D
-  if (isSourceInteger() && getMixedStrides().size() != 2)
-    return emitOpError("address is used as source but dynamic strides argument "
-                       "is missing or it is not 2D");
+  // Checks that memory access parameters are of valid rank.
+  if ((getMixedSizes().size() != getMixedStrides().size()) ||
+      (getMixedStrides().size() != getMixedOffsets().size()) ||
+      (static_cast<int64_t>(getMixedSizes().size()) < tileTy.getRank()))
+    return emitOpError(
+        "memref with a dynamic shape or raw address is used as source but "
+        "dynamic shape argument missing or it is not of valid rank");
 
   auto order = tileTy.getOrder();
   bool rowMajor = (order[0] == 1 && order[1] == 0);
@@ -130,8 +129,7 @@ mlir::LogicalResult InitTileOp::verify() {
     llvm::SmallVector<int64_t, 4> strides;
     auto shape = getSourceMemrefStaticShape();
     int64_t offset;
-    if (mlir::succeeded(
-            mlir::getStridesAndOffset(memrefType, strides, offset))) {
+    if (mlir::succeeded(memrefType.getStridesAndOffset(strides, offset))) {
       int64_t rank = memrefType.getRank();
       if (rowMajor &&
           !((strides[rank - 2] == shape[rank - 1]) && (strides[rank - 1] == 1)))
@@ -248,6 +246,14 @@ void InitTileOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
         {} /* static strides */, indices);
 }
 
+mlir::LogicalResult StoreTileOp::verify() {
+  auto tileTy = getTile().getType();
+  auto attr = tileTy.getWgMap();
+  if (attr && !isEvenDistributed(tileTy.getShape(), attr))
+    return emitOpError("data is not evenly distributed to each subgroup.");
+  return mlir::success();
+}
+
 mlir::LogicalResult TileMMAOp::verify() {
   int64_t aRank = getAType().getRank();
   int64_t bRank = getBType().getRank();
@@ -326,6 +332,14 @@ mlir::LogicalResult BroadcastOp::verify() {
   for (auto i : dims)
     if (srcShape[i] != 1)
       return emitOpError("broadcast dimension of source must have size 1");
+  return mlir::success();
+}
+
+mlir::LogicalResult ConvertLayoutOp::verify() {
+  auto attr = getWgMapSourceAttr();
+  auto shape = getSource().getType().getShape();
+  if (attr && !isEvenDistributed(shape, attr))
+    return emitOpError("data is not evenly distributed to each subgroup.");
   return mlir::success();
 }
 

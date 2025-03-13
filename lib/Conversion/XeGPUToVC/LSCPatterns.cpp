@@ -23,9 +23,10 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/Support/FormatVariadic.h"
+#include <mlir/Dialect/SPIRV/IR/SPIRVDialect.h>
+#include <mlir/Dialect/SPIRV/Transforms/SPIRVConversion.h>
 
 #include "LscIntrinsicEnums.h"
 #include "imex/Utils/VCUtils.h"
@@ -842,8 +843,7 @@ class LoadNdPattern : public OpConversionPattern<LoadNdOp> {
       // TODO: remove this after moving transposeBitWidth into a standalone
       // pass. update the width and pictch of the payload when transposeBitWidth
       // is set, and larger than the element bit width.
-      auto transposeBitWidth =
-          1; // FIXME op.getTransposeBitWidth().value_or(0);
+      auto transposeBitWidth = 32; // op.getTransposeBitWidth().value_or(0);
       auto factor = transposeBitWidth / elemTy.getIntOrFloatBitWidth();
       if (factor > 1) {
         // update the block offset X of the payload, since it is in unit of
@@ -911,7 +911,6 @@ class LoadNdPattern : public OpConversionPattern<LoadNdOp> {
         auto targetTy = convertVectorType(op.getType()).second;
         callOp = rewriter.create<vector::BitCastOp>(loc, targetTy, callOp);
       }
-
       rewriter.replaceOp(op, callOp);
       return success();
     }
@@ -1195,6 +1194,7 @@ public:
     } else {
       lscVecSize = log2(numDstVal) + 2;
     }
+
     auto vecSize = createIntConstant(i8Type, lscVecSize);
     auto transposed = createIntConstant(i8Type, 1);
     auto mask = adaptor.getMask();
@@ -1203,9 +1203,7 @@ public:
     Value payLoad = adaptor.getTensorDesc();
     // src
     auto v16i32Ty = VectorType::get(16, i32Type);
-    auto i32ZeroAttr = IntegerAttr::get(i32Type, 0);
-    Value undef = rewriter.create<arith::ConstantOp>(
-        loc, DenseElementsAttr::get(v16i32Ty, i32ZeroAttr));
+    Value undef = rewriter.create<mlir::spirv::UndefOp>(loc, v16i32Ty);
     Value src0 = undef;
     if (op.getValue()) {
       src0 = op.getValue();
@@ -1223,7 +1221,6 @@ public:
     auto retType = newType;
     auto newOp = createFuncCall(rewriter, loc, funcName, TypeRange{retType},
                                 args, false);
-
     auto *converter = this->getTypeConverter();
     auto castTy = converter->convertType(op.getType());
     auto cast =
@@ -1306,11 +1303,8 @@ void populateAtomicAndFenceLSCPatterns(TypeConverter &converter,
 
 void populateLoadStoreLSCPatterns(TypeConverter &converter,
                                   RewritePatternSet &patterns) {
-  // TODO: why some patterns need typconverter and some not?
-  patterns.add<LSC::LoadNdPattern, LSC::StoreNdPattern, LSC::PrefetchNdPattern>(
-      patterns.getContext());
-
-  patterns.add<LSC::LoadGatherPattern, LSC::StoreScatterPattern,
+  patterns.add<LSC::LoadNdPattern, LSC::StoreNdPattern, LSC::PrefetchNdPattern,
+               LSC::LoadGatherPattern, LSC::StoreScatterPattern,
                LSC::PrefetchPattern>(converter, patterns.getContext());
 }
 

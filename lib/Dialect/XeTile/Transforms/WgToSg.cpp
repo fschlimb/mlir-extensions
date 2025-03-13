@@ -39,7 +39,6 @@
 #include <cassert>
 
 #include <imex/Dialect/XeTile/Transforms/Passes.h>
-#include <imex/Dialect/XeTile/Transforms/XeTileOneToNConversion.h>
 
 using namespace mlir;
 using namespace imex;
@@ -48,25 +47,6 @@ namespace imex {
 #define GEN_PASS_DEF_XETILEWGTOSG
 #include "imex/Dialect/XeTile/Transforms/Passes.h.inc"
 } // namespace imex
-
-namespace {
-// Create a Map to store SG layout_order if we have a load
-// which is transposed before being passed to MMA.
-// Sg layout_order [0, 1] means the subgroup ids are arranged
-// in column major. Default is row-major [1, 0].
-// For example:
-// If we have a sgLayout [4, 8] with layout_order [0, 1]
-// the sg id's will be arranged in the following manner
-// | 0  | 4 | 8  | 12 | 16 | 20 | 24 | 28 |
-// | 1  | 5 | 9  | 13 | 17 | 21 | 25 | 29 |
-// | 2  | 6 | 10 | 14 | 18 | 22 | 26 | 30 |
-// | 3  | 7 | 11 | 15 | 19 | 23 | 27 | 31 |
-
-// Internally we use this layout_order information to calculate the
-// offset for init and load tile
-
-llvm::DenseMap<mlir::Value, std::array<int, 2>> opSgLayoutMap;
-} // namespace
 
 namespace imex {
 
@@ -83,12 +63,16 @@ namespace imex {
 //    -> !xetile.tile<64x64xf32>
 
 
-class WGToSGInitTileOpPattern : public XeOneToNConversion<xetile::InitTileOp> {
-  using XeOneToNConversion<xetile::InitTileOp>::XeOneToNConversion;
+class WGToSGInitTileOpPattern : public OpConversionPattern<xetile::InitTileOp> {
+  using OpConversionPattern<xetile::InitTileOp>::OpConversionPattern;
+public:
+  llvm::DenseMap<mlir::Value, std::array<int, 2>> &sgLayoutMap;
+  WGToSGInitTileOpPattern(MLIRContext *context, llvm::DenseMap<mlir::Value, std::array<int, 2>> &map)
+      : OpConversionPattern<xetile::InitTileOp>(context), sgLayoutMap(map) {}
 
   mlir::LogicalResult
-  matchAndRewrite(xetile::InitTileOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+  matchAndRewrite(xetile::InitTileOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     auto loc = op.getLoc();
     auto tileTy = op.getType();
@@ -173,9 +157,9 @@ class WGToSGInitTileOpPattern : public XeOneToNConversion<xetile::InitTileOp> {
 
     // Look up the map if the init_tile has a layout_order [0, 1]
     // If it does, tranpose the sg ids to get the correct tile.
-    auto it = opSgLayoutMap.find(op.getResult());
-    if (it != opSgLayoutMap.end()){
-     assert((opSgLayoutMap[op->getResult(0)] == std::array<int, 2>{0, 1}));
+    auto it = sgLayoutMap.find(op.getResult());
+    if (it != sgLayoutMap.end()){
+     assert((sgLayoutMap[op->getResult(0)] == std::array<int, 2>{0, 1}));
      calculateGlobalOffsets(globalOffsetsY, wgTileShape[0], sgTileShape[0],
                            sgLayout[0], sgDataDimYConst, sgIdX, offsets[offsets.size() - 2]);
      calculateGlobalOffsets(globalOffsetsX, wgTileShape[1], sgTileShape[1],
@@ -195,7 +179,6 @@ class WGToSGInitTileOpPattern : public XeOneToNConversion<xetile::InitTileOp> {
     }
 
     mlir::SmallVector<mlir::Value> newInitTileOps;
-    llvm::SmallVector<mlir::Type> newResultTypes;
     llvm::SmallVector<mlir::OpFoldResult> newOffsets;
     for (size_t j = 0; j < offsets.size() - 2; ++j) {
         newOffsets.push_back(offsets[j]);
@@ -203,27 +186,35 @@ class WGToSGInitTileOpPattern : public XeOneToNConversion<xetile::InitTileOp> {
     for (size_t i = 0; i < offsetPermutations.size(); i++) {
       newOffsets.push_back(offsetPermutations[i][0]);
       newOffsets.push_back(offsetPermutations[i][1]);
-      auto newInitTileOp = rewriter.create<xetile::InitTileOp>(
-          loc, newTileTy, source, newOffsets);
+      Value newInitTileOp = nullptr;
+      auto sourceMemRefType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+      if (!sourceMemRefType) {
+        return failure();
+      }
+
+      if (sourceMemRefType.hasStaticShape()) {
+        newInitTileOp = rewriter.create<xetile::InitTileOp>(
+            loc, newTileTy, source, newOffsets);
+      }
+      else {
+        newInitTileOp = rewriter.create<xetile::InitTileOp>(
+            loc, newTileTy, source, newOffsets, op.getMixedSizes(), op.getMixedStrides());
+      }
       newOffsets.clear();
       newInitTileOps.push_back(newInitTileOp);
-      newResultTypes.push_back(newTileTy);
     }
 
-    // Mapping for the result types.
-    mlir::OneToNTypeMapping newMapping(op.getResult().getType());
-    newMapping.addInputs(0, newResultTypes);
-    rewriter.replaceOp(op, newInitTileOps, newMapping);
+    rewriter.replaceOpWithMultiple(op, {newInitTileOps});
     return mlir::success();
   }
 };
 
-class WGToSGLoadTileOpPattern : public XeOneToNConversion<xetile::LoadTileOp> {
-  using XeOneToNConversion<xetile::LoadTileOp>::XeOneToNConversion;
+class WGToSGLoadTileOpPattern : public OpConversionPattern<xetile::LoadTileOp> {
+  using OpConversionPattern<xetile::LoadTileOp>::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(xetile::LoadTileOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+  matchAndRewrite(xetile::LoadTileOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     auto sources = adaptor.getSource();
     auto res = op.getValue();
@@ -245,20 +236,17 @@ class WGToSGLoadTileOpPattern : public XeOneToNConversion<xetile::LoadTileOp> {
       newLoadOps.push_back(newLoadOp);
       newResultTypes.push_back(newLoadOp.getResult().getType());
     }
-
-    mlir::OneToNTypeMapping newMapping(op.getResult().getType());
-    newMapping.addInputs(0, newResultTypes);
-    rewriter.replaceOp(op, newLoadOps, newMapping);
+    rewriter.replaceOpWithMultiple(op, {newLoadOps});
     return mlir::success();
   }
 };
 
-class WGToSGTileMMAOpPattern : public XeOneToNConversion<xetile::TileMMAOp> {
-  using XeOneToNConversion<xetile::TileMMAOp>::XeOneToNConversion;
+class WGToSGTileMMAOpPattern : public OpConversionPattern<xetile::TileMMAOp> {
+  using OpConversionPattern<xetile::TileMMAOp>::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(xetile::TileMMAOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+  matchAndRewrite(xetile::TileMMAOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     auto resultTy = op.getResult().getType();
 
@@ -286,19 +274,17 @@ class WGToSGTileMMAOpPattern : public XeOneToNConversion<xetile::TileMMAOp> {
       }
     }
 
-    mlir::OneToNTypeMapping newMapping(resultTy);
-    newMapping.addInputs(0, newResultTypes);
-    rewriter.replaceOp(op, newTileMMAOps, newMapping);
+    rewriter.replaceOpWithMultiple(op, {newTileMMAOps});
     return mlir::success();
   }
 };
 
-class WGToSGStoreTileOpPattern : public XeOneToNConversion<xetile::StoreTileOp> {
-  using XeOneToNConversion<xetile::StoreTileOp>::XeOneToNConversion;
+class WGToSGStoreTileOpPattern : public OpConversionPattern<xetile::StoreTileOp> {
+  using OpConversionPattern<xetile::StoreTileOp>::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(xetile::StoreTileOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+  matchAndRewrite(xetile::StoreTileOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     auto newValues = adaptor.getValue();
     auto newDstTiles = adaptor.getTile();
@@ -313,80 +299,83 @@ class WGToSGStoreTileOpPattern : public XeOneToNConversion<xetile::StoreTileOp> 
   }
 };
 
-class WGToSGSCFForOpPattern : public XeOneToNConversion<mlir::scf::ForOp> {
-  using XeOneToNConversion<mlir::scf::ForOp>::XeOneToNConversion;
+class WGToSGSCFForOpPattern : public OpConversionPattern<mlir::scf::ForOp> {
+  using OpConversionPattern<mlir::scf::ForOp>::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(mlir::scf::ForOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
-
-    llvm::SmallVector<mlir::Value> convertedArgs;
-    llvm::SmallVector<llvm::SmallVector<mlir::Type>> newResultTypes;
-    mlir::OneToNTypeMapping newMapping(
-        op.getResults().getTypes()); /// get the old types
-
-    for (auto &&[i, values] : llvm::enumerate(adaptor.getInitArgs())) {
-      llvm::SmallVector<mlir::Type> newTypes(values.getTypes().begin(),
-                                             values.getTypes().end());
-      convertedArgs.append(values.begin(), values.end());
-      newMapping.addInputs(i, newTypes);
-      newResultTypes.push_back(newTypes);
+  matchAndRewrite(mlir::scf::ForOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Collect the sizes of the new argument mapping. This is needed for mapping
+    // ForOp results.
+    SmallVector<size_t> remappedArgSizes;
+    llvm::ArrayRef<ValueRange> remappedInitArgs = adaptor.getInitArgs();
+    SmallVector<Value> flattenedRemappedInitArgs;
+    for (auto initArg : remappedInitArgs) {
+      remappedArgSizes.push_back(initArg.size());
+      flattenedRemappedInitArgs.append(initArg.begin(), initArg.end());
     }
 
-    auto newOp = rewriter.create<mlir::scf::ForOp>(
+    // Do a signature conversion for the old for body.
+    auto oldBody = op.getBody();
+    auto oldBodyArgTypes = oldBody->getArgumentTypes();
+    TypeConverter::SignatureConversion signatureConversion(
+        oldBodyArgTypes.size());
+    signatureConversion.addInputs(0, oldBodyArgTypes[0]);
+    for (unsigned i = 1; i < oldBodyArgTypes.size(); i++) {
+      auto remappedTypes = llvm::to_vector(remappedInitArgs[i - 1].getTypes());
+      signatureConversion.addInputs(i, remappedTypes);
+    }
+    rewriter.applySignatureConversion(oldBody, signatureConversion);
+    // Create a new ForOp.
+    auto newForOp = rewriter.create<scf::ForOp>(
         op.getLoc(), op.getLowerBound(), op.getUpperBound(), op.getStep(),
-        convertedArgs);
+        flattenedRemappedInitArgs);
+    rewriter.eraseBlock(newForOp.getBody());
+    rewriter.inlineRegionBefore(op.getRegion(), newForOp.getRegion(),
+                                newForOp.getRegion().begin());
 
-    auto argTys = op.getRegion().getArgumentTypes();
-    mlir::OneToNTypeMapping argumentMapping(argTys);
-    for (auto [j, arg] : llvm::enumerate(op.getRegion().getArgumentTypes())) {
-      if (j == 0)
-        argumentMapping.addInputs(j, arg); // 0th is index (k)
-      else
-        argumentMapping.addInputs(
-            j, newResultTypes[j - 1]); // get the new types from
-                                       // adaptor.getInitArgs()
+    // Compute the remapped results.
+    SmallVector<ValueRange> remappedResults;
+    unsigned newResultOffset = 0;
+    for (unsigned i = 0; i < remappedArgSizes.size(); i++) {
+      unsigned remappedResultSize = remappedArgSizes[i];
+      ValueRange remappedResultValues =
+          newForOp.getResults().slice(newResultOffset, remappedResultSize);
+      remappedResults.push_back(remappedResultValues);
+      newResultOffset += remappedResultSize;
     }
 
-    rewriter.applySignatureConversion(&op.getRegion().getBlocks().front(), argumentMapping);
-    newOp.getBody()->erase();
-    rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
-                                newOp.getRegion().end());
-    rewriter.replaceOp(op, newOp.getResults(), newMapping);
-    return mlir::success();
+    rewriter.replaceOpWithMultiple(op, remappedResults);
+    return success();
   }
 };
 
-struct WGToSGSCFYieldOpPattern : public XeOneToNConversion<mlir::scf::YieldOp> {
-  using XeOneToNConversion<mlir::scf::YieldOp>::XeOneToNConversion;
+struct WGToSGSCFYieldOpPattern : public OpConversionPattern<mlir::scf::YieldOp> {
+  using OpConversionPattern<mlir::scf::YieldOp>::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(mlir::scf::YieldOp op, OpAdaptor adaptor,
-                  imex::XeOneToNPatternRewriter &rewriter) const override {
-    llvm::SmallVector<mlir::Value> convertedResults;
-    llvm::SmallVector<mlir::Type> newResultTypes;
-    for (auto &values : adaptor.getResults())
-      convertedResults.append(values.begin(), values.end());
+  matchAndRewrite(mlir::scf::YieldOp op, OneToNOpAdaptor adaptor,
+                ConversionPatternRewriter &rewriter) const override {
+    ArrayRef<ValueRange> remappedYields = adaptor.getOperands();
+    SmallVector<Value> newYieldedValues;
+    for (auto yield : remappedYields)
+      newYieldedValues.append(yield.begin(), yield.end());
 
-    for (auto result : convertedResults) {
-      newResultTypes.push_back(result.getType());
-    }
-
-    auto newOp =
-        rewriter.create<mlir::scf::YieldOp>(op.getLoc(), convertedResults);
-
-    rewriter.replaceOp(op, newOp.getResults());
-    return mlir::success();
+    rewriter.modifyOpInPlace(op, [&]() {
+      op.getResultsMutable().clear();
+      op.getResultsMutable().append(newYieldedValues);
+    });
+    return success();
   }
 };
 
 class WGToSGUpdateTileOffsetOpPattern
-    : public XeOneToNConversion<xetile::UpdateTileOffsetOp> {
-  using XeOneToNConversion<xetile::UpdateTileOffsetOp>::XeOneToNConversion;
+    : public OpConversionPattern<xetile::UpdateTileOffsetOp> {
+  using OpConversionPattern<xetile::UpdateTileOffsetOp>::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(xetile::UpdateTileOffsetOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+  matchAndRewrite(xetile::UpdateTileOffsetOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     llvm::SmallVector<::mlir::Value> newUpdateTileOffsetOps;
     llvm::SmallVector<mlir::Type> newResultTypes;
     for (auto tile : adaptor.getTile()) {
@@ -397,100 +386,18 @@ class WGToSGUpdateTileOffsetOpPattern
       newResultTypes.push_back(tile.getType());
     }
 
-    mlir::OneToNTypeMapping newMapping(op.getResult().getType());
-    newMapping.addInputs(0, newResultTypes);
-    rewriter.replaceOp(op, newUpdateTileOffsetOps, newMapping);
-    return mlir::success();
-  }
-};
-
-template <typename Op, int numOperands>
-Op createOp(XeOneToNPatternRewriter &rewriter, mlir::Location loc,
-            llvm::SmallVector<llvm::SmallVector<mlir::Value>> operands, int i) {
-  static_assert(numOperands >= 1 && numOperands <= 3,
-                "Unsupported number of operands");
-
-  if constexpr (numOperands == 1) {
-    return rewriter.create<Op>(loc, operands[0][i]);
-  } else if constexpr (numOperands == 2) {
-    return rewriter.create<Op>(loc, operands[0][i], operands[1][i]);
-  } else if constexpr (numOperands == 3) {
-    return rewriter.create<Op>(loc, operands[0][i], operands[1][i],
-                               operands[2][i]);
-  }
-}
-
-template <typename Op, int numOperands>
-class WGToSGElementWiseOpPattern : public XeOneToNConversion<Op> {
-  using XeOneToNConversion<Op>::XeOneToNConversion;
-  using RangeT = llvm::ArrayRef<mlir::ValueRange>;
-  using OpAdaptor = typename Op::template GenericAdaptor<RangeT>;
-
-  mlir::LogicalResult
-  matchAndRewrite(Op op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
-    auto res = op.getResult();
-    auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
-
-    auto mapAttr =
-        llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("map"));
-    if (!mapAttr) {
-      return mlir::failure();
-    }
-
-    auto wgTileShape = resType.getShape();
-    auto sgData = mapAttr.getSgData();
-    auto sgLayout = mapAttr.getSgLayout();
-
-    auto newTy =
-        mlir::VectorType::get({sgData[0], sgData[1]}, resType.getElementType());
-
-    // Get all the slices of Operands
-    auto operands = adaptor.getOperands();
-
-    llvm::SmallVector<llvm::SmallVector<mlir::Value>> operand;
-    if (numOperands == 1)
-      operand.push_back(operands[0]);
-    else if (numOperands == 2) {
-      operand.push_back(operands[0]);
-      operand.push_back(operands[1]);
-    } else {
-      operand.push_back(operands[0]);
-      operand.push_back(operands[1]);
-      operand.push_back(operands[2]);
-    }
-
-    size_t numOps;
-    if (sgLayout[0] * sgData[0] == wgTileShape[0] &&
-        sgLayout[1] * sgData[1] == wgTileShape[1])
-      numOps = 1; // 1:1 mapping
-    else
-      numOps = (wgTileShape[0] / (sgLayout[0] * sgData[0])) +
-               (wgTileShape[1] / (sgLayout[1] * sgData[1]));
-
-    llvm::SmallVector<::mlir::Value> newOps;
-    llvm::SmallVector<mlir::Type> newResultTypes;
-    for (size_t i = 0; i < numOps; i++) {
-      auto newOp = createOp<Op, numOperands>(rewriter, op.getLoc(), operand, i);
-      newOp->getResult(0).setType(newTy);
-      newOps.push_back(newOp);
-      newResultTypes.push_back(newTy);
-    }
-
-    mlir::OneToNTypeMapping newMapping(op.getResult().getType());
-    newMapping.addInputs(0, newResultTypes);
-    rewriter.replaceOp(op, newOps, newMapping);
+    rewriter.replaceOpWithMultiple(op, {newUpdateTileOffsetOps});
     return mlir::success();
   }
 };
 
 class WGToSGArithConstantOpPattern
-    : public XeOneToNConversion<mlir::arith::ConstantOp> {
-  using XeOneToNConversion<mlir::arith::ConstantOp>::XeOneToNConversion;
+    : public OpConversionPattern<mlir::arith::ConstantOp> {
+  using OpConversionPattern<mlir::arith::ConstantOp>::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(mlir::arith::ConstantOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+  matchAndRewrite(mlir::arith::ConstantOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     auto value = llvm::dyn_cast<mlir::DenseElementsAttr>(op.getValue());
     auto valueType = mlir::dyn_cast<mlir::VectorType>(value.getType());
@@ -551,84 +458,27 @@ class WGToSGArithConstantOpPattern
                  (wgTileShape[1] / (sgLayout[1] * sgData[1]));
 
     llvm::SmallVector<::mlir::Value> newOps;
-    llvm::SmallVector<mlir::Type> newResultTypes;
     for (size_t i = 0; i < numOps; i++) {
       auto newOp = rewriter.create<arith::ConstantOp>(op.getLoc(), newTy, attr);
       newOps.push_back(newOp);
-      newResultTypes.push_back(newTy);
     }
 
-    mlir::OneToNTypeMapping newMapping(op.getResult().getType());
-    newMapping.addInputs(0, newResultTypes);
-    rewriter.replaceOp(op, newOps, newMapping);
-    return mlir::success();
-  }
-};
-
-// TODO: Templatize this pattern for similar elementwise ops
-class WGToSGArithExtFOpPattern
-    : public XeOneToNConversion<mlir::arith::ExtFOp> {
-  using XeOneToNConversion<mlir::arith::ExtFOp>::XeOneToNConversion;
-
-  mlir::LogicalResult
-  matchAndRewrite(mlir::arith::ExtFOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
-
-    auto res = op.getResult();
-    auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
-
-    auto mapAttr =
-        llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("map"));
-    if (!mapAttr) {
-      return mlir::failure();
-    }
-
-    auto sgData = mapAttr.getSgData();
-
-    auto newTy =
-        mlir::VectorType::get({sgData[0], sgData[1]}, resType.getElementType());
-
-    auto newOp = rewriter.create<mlir::arith::ExtFOp>(op.getLoc(), newTy, adaptor.getOperands()[0]);
-    rewriter.replaceOp(op, newOp);
-    return mlir::success();
-  }
-};
-
-class WGToSGArithTruncFOpPattern
-    : public XeOneToNConversion<mlir::arith::TruncFOp> {
-  using XeOneToNConversion<mlir::arith::TruncFOp>::XeOneToNConversion;
-
-  mlir::LogicalResult
-  matchAndRewrite(mlir::arith::TruncFOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
-
-    auto res = op.getResult();
-    auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
-
-    auto mapAttr =
-        llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("map"));
-    if (!mapAttr) {
-      return mlir::failure();
-    }
-
-    auto sgData = mapAttr.getSgData();
-
-    auto newTy =
-        mlir::VectorType::get({sgData[0], sgData[1]}, resType.getElementType());
-
-    auto newOp = rewriter.create<mlir::arith::TruncFOp>(op.getLoc(), newTy, adaptor.getOperands()[0]);
-    rewriter.replaceOp(op, newOp);
+    rewriter.replaceOpWithMultiple(op, {newOps});
     return mlir::success();
   }
 };
 
 class WGToSGVectorTranspose
-    :public XeOneToNConversion<mlir::vector::TransposeOp> {
-  using XeOneToNConversion<mlir::vector::TransposeOp>::XeOneToNConversion;
+    :public OpConversionPattern<mlir::vector::TransposeOp> {
+  using OpConversionPattern<mlir::vector::TransposeOp>::OpConversionPattern;
+public:
+  llvm::DenseMap<mlir::Value, std::array<int, 2>> &sgLayoutMap;
+  WGToSGVectorTranspose(MLIRContext *context, llvm::DenseMap<mlir::Value, std::array<int, 2>> &map)
+      : OpConversionPattern<mlir::vector::TransposeOp>(context), sgLayoutMap(map) {}
 
   mlir::LogicalResult
   matchAndRewrite(mlir::vector::TransposeOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+                  ConversionPatternRewriter &rewriter) const override {
     if (op.getVector().getType().getRank() != 2)
       return mlir::failure();
 
@@ -642,15 +492,15 @@ class WGToSGVectorTranspose
       return mlir::failure();
     }
 
-    auto it = opSgLayoutMap.find(op.getResult());
+    auto it = sgLayoutMap.find(op.getResult());
     // Transpose within subgroup if the sg layout order is {0, 1}
-    if (it != opSgLayoutMap.end()){
-      assert((opSgLayoutMap[op->getResult(0)] == std::array<int, 2>{0, 1}));
+    if (it != sgLayoutMap.end()){
+      assert((sgLayoutMap[op->getResult(0)] == std::array<int, 2>{0, 1}));
       auto sgData = mapAttr.getSgData();
       auto newTy = mlir::VectorType::get({sgData[0], sgData[1]},
                                                    resType.getElementType());
       auto newOp = rewriter.create<mlir::vector::TransposeOp>(
-              op.getLoc(), newTy, adaptor.getVector()[0], op.getPermutation());
+              op.getLoc(), newTy, adaptor.getVector(), op.getPermutation());
       rewriter.replaceOp(op, newOp);
       return mlir::success();
     }
@@ -680,142 +530,170 @@ class WGToSGVectorTranspose
 // gpu.barrier
 // %remapped_tile = xetile.init_tile %slm[offsetX, offsetY] : memref<256x256xf32, 3> -> xetile.tile<8x256xf32>
 // %remapped_vector = xetile.load_tile %reshaped_tile : xetile.tile<8x256xf32> -> vector<8x256xf32>
+
+// If the input value is defined by a transpose op, it also try to fold the transpose effect
+// into the store op to the slm using a transposed view.
+
+// Example:
+// WG IR
+// #wg_map_c = #xetile.wg_map<sg_layout = [4, 8], sg_data = [64, 32]>
+// #wg_map_b = #xetile.wg_map<sg_layout = [8, 4], sg_data = [32, 64]>
+// #wg_map_a = #xetile.wg_map<sg_layout = [32, 1], sg_data = [8, 256]>
+// %vector_b = xetile.transpose %c {#wg_map_c} : vector<256x256xfloat> -> vector<256x256xfloat>
+// %vector_a = xetile.tile_conv_layout %vector_b {wg_map_result = #wg_map_a, wg_map_source = #wg_map_b}: vector<256x256xfloat> into vector<256x256xfloat>
+
+// SG IR
+// %slm = memref.alloc() : memref<256x256xf32, 3>
+// %view = memref.transpose %slm : memref<256x256xf32, 3> to memref<256x256xf32, strided<[1, 256]>, 3>
+// %tile = xetile.init_tile %view[offset_x, offset_y] : memref<256x256xf32, strided<[1, 256]>, 3> -> xetile.tile<64x32xf32, #xetile.tile_attr<order=[0, 1]>>
+// xetile.store_tile %in, %tile :vector<64x32xf32>, !xetile.tile<64x32xf32, #xetile.tile_attr<order=[0, 1]>>
+// gpu.barrier
+// %remapped_tile = xetile.init_tile %slm[offsetX, offsetY] : memref<256x256xf32, 3> -> xetile.tile<8x256xf32>
+// %remapped_vector = xetile.load_tile %reshaped_tile : xetile.tile<8x256xf32> -> vector<8x256xf32>
+
 class WGToSGXeTileConvertLayout
-    :public XeOneToNConversion<xetile::ConvertLayoutOp> {
-  using XeOneToNConversion<xetile::ConvertLayoutOp>::XeOneToNConversion;
+    :public OpConversionPattern<xetile::ConvertLayoutOp> {
+  using OpConversionPattern<xetile::ConvertLayoutOp>::OpConversionPattern;
 
   mlir::LogicalResult
   matchAndRewrite(xetile::ConvertLayoutOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+                  ConversionPatternRewriter &rewriter) const override {
     if (op.getSource().getType().getRank() != 2)
       return mlir::failure();
 
     auto loc = op.getLoc();
+    auto ctx = op.getContext();
     auto res = op.getResult();
-    auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
+    auto defOp = op.getSource().getDefiningOp();
+    auto resType = res.getType();
     auto elemTy = resType.getElementType();
     auto resShape = resType.getShape();
+    auto slmScopeAttr = rewriter.getI32IntegerAttr(3);
 
-    auto dstMapAttr =
-        llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("wg_map_result"));
-
-    xetile::WorkGroupMapAttr srcMapAttr;
-    srcMapAttr = llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("wg_map_source"));
-
-    if (!dstMapAttr) {
-      return mlir::failure();
-    }
-
-    if(!srcMapAttr) {
-      // Get the map from operand
-      auto operand = op.getSource().getDefiningOp();
-      srcMapAttr =  llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(operand->getAttr("map"));
-      if (!srcMapAttr) {
-        return mlir::failure();
-      }
-    }
-
-    auto srcMapSgData = srcMapAttr.getSgData();
-    auto srcSgLayout = srcMapAttr.getSgLayout();
-    auto dstMapSgData = dstMapAttr.getSgData();
-    auto dstSgLayout = dstMapAttr.getSgLayout();
-
-    auto createIndexConstant = [&](mlir::Type type, int64_t value) {
-      auto attr = rewriter.getIndexAttr(value);
-      return rewriter.create<mlir::arith::ConstantOp>(loc, type, attr);
+    auto createIndexConstant = [&](int64_t value) {
+      return rewriter.create<mlir::arith::ConstantIndexOp>(loc, value);
     };
 
+    // get the workgroup map attribute for a value from its defining op.
+    auto getWorkGroupMapAttr = [&](mlir::Value val) {
+      auto defOp = val.getDefiningOp();
+      if (auto ld = mlir::dyn_cast<xetile::LoadTileOp>(defOp)) {
+        return ld.getSource().getType().getWgMap();
+      }
+      return defOp->getAttrOfType<xetile::WorkGroupMapAttr>("map");
+    };
+
+    auto isOneUseTranspose = [&](mlir::Operation *op) {
+      return mlir::isa<xetile::TransposeOp, mlir::vector::TransposeOp>(op) && op->hasOneUse();
+    };
+
+    auto getOffsets = [&](mlir::Value sgId, mlir::DenseI32ArrayAttr sgLayout, mlir::DenseI32ArrayAttr sgData) {
+      // The sgID is a linear (1D) id. Convert it to 2D to get the x and y
+      // coordinates of sg
+      // row = i / cols
+      // col =  i % cols
+      // x is row, y is col
+      // TODO: Div and Rem are expensive. Find alterate.
+      auto dimY = createIndexConstant(sgLayout[1]);
+      auto sgIdX = rewriter.create<mlir::index::DivUOp>(loc, sgId, dimY);
+      auto sgIdY = rewriter.create<mlir::index::RemUOp>(loc, sgId, dimY);
+
+      auto offsetX = rewriter.createOrFold<mlir::index::MulOp>(loc, sgIdX, createIndexConstant(sgData[0]));
+      auto offsetY = rewriter.createOrFold<mlir::index::MulOp>(loc, sgIdY, createIndexConstant(sgData[1]));
+      return std::make_pair(offsetX, offsetY);
+    };
+
+    auto srcMapAttr = isOneUseTranspose(defOp) ? getWorkGroupMapAttr(defOp->getOperand(0))
+                                               : op->hasAttr("wg_map_source") ? op->getAttrOfType<xetile::WorkGroupMapAttr>("wg_map_source")
+                                               : getWorkGroupMapAttr(op.getSource());
+
+    auto dstMapAttr = op->getAttrOfType<xetile::WorkGroupMapAttr>("wg_map_result");
+
+    if (!srcMapAttr || !dstMapAttr)
+      return mlir::failure();
+
     rewriter.setInsertionPoint(op);
+
     // Allocate SLM
     auto bitWidth = elemTy.getIntOrFloatBitWidth();
     auto flattenFactor = bitWidth / 8;
-    auto slmShape = resShape[0] * resShape[1] * flattenFactor;
-    auto slmTy = mlir::MemRefType::get(slmShape, rewriter.getI8Type(), {}, 3);
-    auto slm = rewriter.create<mlir::memref::AllocOp>(loc, slmTy);
-    ValueRange sizes;
-    auto zero = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-    auto viewTy = mlir::MemRefType::get({resShape[0], resShape[1]}, elemTy, {}, 3);
-    auto viewOp = rewriter.create<mlir::memref::ViewOp>(
-                op.getLoc(), viewTy, slm, zero, sizes);
+    auto slmSize = resType.getNumElements() * flattenFactor;
+    auto slmTy = MemRefType::get(slmSize, rewriter.getI8Type(), {}, 3);
+    auto slm = rewriter.create<memref::AllocOp>(loc, slmTy);
+    auto viewTy = MemRefType::get(resShape, elemTy, {}, 3);
+    auto view = rewriter.create<memref::ViewOp>(loc, viewTy, slm, createIndexConstant(0), ValueRange());
 
     // Get SG id
-    auto sgId = rewriter.create<mlir::gpu::SubgroupIdOp>(
-        loc, rewriter.getIndexType(), nullptr);
+    auto sgId = rewriter.create<mlir::gpu::SubgroupIdOp>(loc, rewriter.getIndexType(), nullptr);
 
-    auto indexType = rewriter.getIndexType();
-    auto srcMapDimY = createIndexConstant(indexType, srcSgLayout[1]);
+    { // store to slm
+      auto sgData = srcMapAttr.getSgData();
+      auto sgLayout = srcMapAttr.getSgLayout();
 
-    // The sgID is a linear (1D) id. Convert it to 2D to get the x and y
-    // coordinates of sg
-    // row = i / cols
-    // col =  i % cols
-    // x is row, y is col
-    // TODO: Floorsdiv and Remu are expensive. Find alterate.
-    auto storeSgIdX =
-        rewriter.create<mlir::index::DivUOp>(loc, sgId, srcMapDimY);
-    auto storeSgIdY =
-        rewriter.create<mlir::index::RemUOp>(loc, sgId, srcMapDimY);
+      auto [offsetX, offsetY] = getOffsets(sgId, sgLayout, sgData);
 
-    // Store to SLM using src map
-    auto memoryScopeAttr = mlir::IntegerAttr::get(rewriter.getIntegerType(32), 3);
-    auto order = mlir::DenseI32ArrayAttr::get(op.getContext(), {1, 0});
-    auto attr = imex::xetile::XeTileAttr::get(
-        op.getContext(), nullptr /*sgMap*/, nullptr /*wgMap*/,
-        order /*order*/, memoryScopeAttr /*memoryscope*/, nullptr /*scatterAttr*/);
-    xetile::TileType srcTileTy =
-      imex::xetile::TileType::get({srcMapSgData[0], srcMapSgData[1]}, elemTy, attr);
+      mlir::Value stView = view;
+      mlir::Value data = adaptor.getSource();
+      mlir::DenseI32ArrayAttr order = rewriter.getDenseI32ArrayAttr({1, 0});
+      if (isOneUseTranspose(defOp)) {
+        data = rewriter.getRemappedValue(defOp->getOperand(0));
+        order = rewriter.getDenseI32ArrayAttr({0, 1});
 
-    auto storeOffsetX = rewriter.createOrFold<mlir::index::MulOp>(
-                loc, storeSgIdX, createIndexConstant(indexType, srcMapSgData[0]));
-    auto storeOffsetY = rewriter.createOrFold<mlir::index::MulOp>(
-                loc, storeSgIdY, createIndexConstant(indexType, srcMapSgData[1]));
-    auto storeInitTileOp = rewriter.create<xetile::InitTileOp>(
-          loc, srcTileTy, viewOp, llvm::ArrayRef<mlir::OpFoldResult>({storeOffsetX, storeOffsetY}));
-    //TODO: Set up cache attributes
-    rewriter.create<xetile::StoreTileOp>(loc, adaptor.getSource()[0],
-                                         storeInitTileOp, nullptr, nullptr, nullptr);
+        auto permMap = mlir::AffineMap::getPermutationMap(llvm::ArrayRef<int64_t>({1, 0}), ctx);
+        auto permAttr = mlir::AffineMapAttr::get(permMap);
+        stView = rewriter.create<memref::TransposeOp>(loc, view, permAttr);
+      }
 
-    // Add barrier
+      auto attr = imex::xetile::XeTileAttr::get(ctx, nullptr /*sgMap*/, nullptr /*wgMap*/, order, slmScopeAttr, nullptr /*scatterAttr*/);
+      auto tileTy = imex::xetile::TileType::get({sgData[0], sgData[1]}, elemTy, attr);
+
+      auto tile = rewriter.create<xetile::InitTileOp>(loc, tileTy, stView, llvm::ArrayRef<mlir::OpFoldResult>({offsetX, offsetY}));
+      rewriter.create<xetile::StoreTileOp>(loc, data, tile, nullptr, nullptr, nullptr);
+    }
+
+    // Add barrier to wait for all threads to finish writing to SLM
     rewriter.create<mlir::gpu::BarrierOp>(loc);
 
-    // Load from SLM with result map
-    xetile::TileType dstTileTy =
-      imex::xetile::TileType::get({dstMapSgData[0], dstMapSgData[1]}, elemTy, attr);
-    auto newResTy =
-          mlir::VectorType::get({dstMapSgData[0], dstMapSgData[1]}, elemTy);
+    { // load from slm
+      auto sgData = dstMapAttr.getSgData();
+      auto sgLayout = dstMapAttr.getSgLayout();
 
-    auto dstMapDimY = createIndexConstant(indexType, dstSgLayout[1]);
-    auto loadSgIdX = rewriter.create<mlir::index::DivUOp>(loc, sgId, dstMapDimY);
-    auto loadSgIdY =  rewriter.create<mlir::index::RemUOp>(loc, sgId, dstMapDimY);
-    auto loadOffsetX = rewriter.createOrFold<mlir::index::MulOp>(
-                loc, loadSgIdX, createIndexConstant(indexType, dstMapSgData[0]));
-    auto loadOffsetY = rewriter.createOrFold<mlir::index::MulOp>(
-                loc, loadSgIdY, createIndexConstant(indexType, dstMapSgData[1]));
-    auto loadInitTileOp = rewriter.create<xetile::InitTileOp>(
-          loc, dstTileTy, viewOp, llvm::ArrayRef<mlir::OpFoldResult>({loadOffsetX, loadOffsetY}));
-    //TODO: Set up cache attributes
-    auto loadTile = rewriter.create<xetile::LoadTileOp>(
-          loc, newResTy, loadInitTileOp, mlir::Attribute(), nullptr, nullptr, nullptr);
+      auto [offsetX, offsetY] = getOffsets(sgId, sgLayout, sgData);
+      offsetX = rewriter.createOrFold<mlir::index::RemUOp>(loc, offsetX, createIndexConstant(resShape[0]));
+      offsetY = rewriter.createOrFold<mlir::index::RemUOp>(loc, offsetY, createIndexConstant(resShape[1]));
 
-    rewriter.replaceOp(op, loadTile);
-    return mlir::success();
+      auto order = rewriter.getDenseI32ArrayAttr({1, 0});
+      auto attr = imex::xetile::XeTileAttr::get(ctx, nullptr /*sgMap*/, nullptr /*wgMap*/, order, slmScopeAttr, nullptr /*scatterAttr*/);
+      auto tileTy = xetile::TileType::get({sgData[0], sgData[1]}, elemTy, attr);
+      auto newResTy = mlir::VectorType::get({sgData[0], sgData[1]}, elemTy);
+
+      auto tile = rewriter.create<xetile::InitTileOp>(loc, tileTy, view, llvm::ArrayRef<mlir::OpFoldResult>({offsetX, offsetY}));
+      //TODO: Set up cache attributes
+      auto ld = rewriter.create<xetile::LoadTileOp>(loc, newResTy, tile, mlir::Attribute(), nullptr, nullptr, nullptr);
+      rewriter.replaceOp(op, ld);
     }
-  };
+
+    if (isOneUseTranspose(defOp))
+      rewriter.eraseOp(defOp);
+
+    return mlir::success();
+  }
+};
 
 class WGToSGVectorBroadcast
-    :public XeOneToNConversion<mlir::vector::BroadcastOp> {
-  using XeOneToNConversion<mlir::vector::BroadcastOp>::XeOneToNConversion;
+    :public OpConversionPattern<mlir::vector::BroadcastOp> {
+  using OpConversionPattern<mlir::vector::BroadcastOp>::OpConversionPattern;
 
   mlir::LogicalResult
   matchAndRewrite(mlir::vector::BroadcastOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+                  ConversionPatternRewriter &rewriter) const override {
     if (op.getVector().getType().getRank() != 2)
       return mlir::failure();
 
     auto res = op.getResult();
     auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
 
-    auto srcTy =  mlir::dyn_cast<mlir::VectorType>((adaptor.getSource()[0]).getType());
+    auto srcTy =  mlir::dyn_cast<mlir::VectorType>((adaptor.getSource()).getType());
     auto srcShape = srcTy.getShape();
 
     auto mapAttr =
@@ -835,19 +713,18 @@ class WGToSGVectorBroadcast
       return mlir::failure();
 
     auto newOp = rewriter.create<mlir::vector::BroadcastOp>(
-            op.getLoc(), newTy, adaptor.getSource()[0]);
+            op.getLoc(), newTy, adaptor.getSource());
     rewriter.replaceOp(op, newOp);
     return mlir::success();
   }
 };
 
-
-class WGToSGPrefetchOpPattern : public XeOneToNConversion<xetile::PrefetchTileOp> {
-  using XeOneToNConversion<xetile::PrefetchTileOp>::XeOneToNConversion;
+class WGToSGPrefetchOpPattern : public OpConversionPattern<xetile::PrefetchTileOp> {
+  using OpConversionPattern<xetile::PrefetchTileOp>::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(xetile::PrefetchTileOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+  matchAndRewrite(xetile::PrefetchTileOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     auto L1 = op.getL1HintAttr();
     auto L2 = op.getL2HintAttr();
@@ -863,13 +740,12 @@ class WGToSGPrefetchOpPattern : public XeOneToNConversion<xetile::PrefetchTileOp
 };
 
 class WGToSGVectorMultiDimReductionOp
-    : public XeOneToNConversion<mlir::vector::MultiDimReductionOp> {
-  using XeOneToNConversion<
-      mlir::vector::MultiDimReductionOp>::XeOneToNConversion;
+    : public OpConversionPattern<mlir::vector::MultiDimReductionOp> {
+  using OpConversionPattern<mlir::vector::MultiDimReductionOp>::OpConversionPattern;
 
   mlir::LogicalResult
   matchAndRewrite(mlir::vector::MultiDimReductionOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+                  ConversionPatternRewriter &rewriter) const override {
 
     auto res = op.getResult();
     auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
@@ -884,7 +760,7 @@ class WGToSGVectorMultiDimReductionOp
 
     auto sgData = mapAttr.getSgData();
 
-    auto src = adaptor.getSource()[0];
+    auto src = adaptor.getSource();
     auto srcType = mlir::dyn_cast<mlir::VectorType>(src.getType());
 
     if (resRank == 2) {
@@ -896,13 +772,13 @@ class WGToSGVectorMultiDimReductionOp
 
       // ShapeCast acc to match reduction op shape.
       auto acc = rewriter.create<vector::ShapeCastOp>(op->getLoc(), newTy,
-                                                      adaptor.getAcc()[0]);
+                                                      adaptor.getAcc());
 
       auto newOp = rewriter.create<mlir::vector::MultiDimReductionOp>(
           op.getLoc(), newTy, op.getKind(), src, acc, redDims);
 
       // Shape Cast the output of reduction back to 2D
-      auto accumalator = adaptor.getAcc()[0];
+      auto accumalator = adaptor.getAcc();
       auto accumalatorType =
           mlir::dyn_cast<mlir::VectorType>(accumalator.getType());
       auto outputVectorTy = mlir::VectorType::get(
@@ -925,8 +801,8 @@ class WGToSGVectorMultiDimReductionOp
       mlir::SmallVector<int64_t> redDims{reduceDim};
       auto newTy = mlir::VectorType::get(outputShape, srcType.getElementType());
       auto newOp = rewriter.create<mlir::vector::MultiDimReductionOp>(
-          op.getLoc(), newTy, op.getKind(), adaptor.getSource()[0],
-          adaptor.getAcc()[0], redDims);
+          op.getLoc(), newTy, op.getKind(), adaptor.getSource(),
+          adaptor.getAcc(), redDims);
       rewriter.replaceOp(op, newOp);
       return mlir::success();
     }
@@ -937,12 +813,12 @@ class WGToSGVectorMultiDimReductionOp
 // produces 1D
 
 class WGToSGVectorShapeCast
-    : public XeOneToNConversion<mlir::vector::ShapeCastOp> {
-  using XeOneToNConversion<mlir::vector::ShapeCastOp>::XeOneToNConversion;
+    : public OpConversionPattern<mlir::vector::ShapeCastOp> {
+  using OpConversionPattern<mlir::vector::ShapeCastOp>::OpConversionPattern;
 
   mlir::LogicalResult
   matchAndRewrite(mlir::vector::ShapeCastOp op, OpAdaptor adaptor,
-                  XeOneToNPatternRewriter &rewriter) const override {
+                  ConversionPatternRewriter &rewriter) const override {
 
     auto res = op.getResult();
     auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
@@ -957,7 +833,7 @@ class WGToSGVectorShapeCast
           return mlir::failure();
         }
       }
-      rewriter.replaceOp(op, adaptor.getSource()[0]);
+      rewriter.replaceOp(op, adaptor.getSource());
       return mlir::success();
     }
 
@@ -977,123 +853,284 @@ class WGToSGVectorShapeCast
         mlir::VectorType::get({sgData[0], sgData[1]}, resType.getElementType());
 
     auto newOp = rewriter.create<mlir::vector::ShapeCastOp>(
-        op.getLoc(), newTy, adaptor.getSource()[0]);
+        op.getLoc(), newTy, adaptor.getSource());
     rewriter.replaceOp(op, newOp);
     return mlir::success();
   }
 };
 
-// Helper function to analyze the def-use chain of initTileOps. Currently we
-// pattern match the following def-use chain as a candidate for
-// load + tranpose optimization.
-// init_tile -> scf.for -> load_tile -> vector.transpose -> (pre-op) -> tile_mma
-void analyzeInitTileOps(mlir::Operation *op) {
+template <typename Op, int numOperands>
+Op createOp(ConversionPatternRewriter &rewriter, mlir::Location loc,
+            llvm::SmallVector<llvm::SmallVector<mlir::Value>> operands, int i) {
+  static_assert(numOperands >= 1 && numOperands <= 3,
+                "Unsupported number of operands");
 
-  op->walk([&](imex::xetile::InitTileOp initOp) -> mlir::WalkResult {
-    llvm::SmallVector<mlir::Operation *> ops;
-    // TODO: Add support for initTileOps using sources other than static memrefs
-    if (!initOp.isSourceMemRef())
-      return mlir::WalkResult::skip();
-    if (!initOp.sourceMemRefHasStaticShape())
-      return mlir::WalkResult::skip();
-
-    // Ignore initTileOps with more than one use
-    if (!initOp->hasOneUse())
-      return mlir::WalkResult::skip();
-    ops.push_back(initOp);
-    auto initOpUser = *initOp->user_begin();
-    // InitTileOp must be consumed by a ForOp
-    mlir::Operation *loadUser = nullptr;
-    mlir::BlockArgument loopArg;
-    if (auto scfFor = llvm::dyn_cast_if_present<mlir::scf::ForOp>(initOpUser)) {
-      auto argument = imex::getArgForOperand(scfFor, initOp.getResult());
-      for (auto user : argument.getUsers()) {
-        if (llvm::isa<imex::xetile::LoadTileOp>(user)) {
-          loadUser = user;
-          ops.push_back(scfFor);
-          ops.push_back(user);
-        } else if (llvm::isa<imex::xetile::UpdateTileOffsetOp>(user)) {
-          ops.push_back(scfFor);
-          ops.push_back(user);
-        }
-        // Nested scf.for's
-        // init_tile -> scf.for -> update_tile_offset
-        //                  |
-        //               scf.for -> load_tile -> vector.transpose -> (pre-op) ->
-        //               tile_mma
-        else if (auto scfFor =
-                     llvm::dyn_cast_if_present<mlir::scf::ForOp>(user)) {
-          for (auto iterOperand : llvm::enumerate(scfFor.getInitArgs())) {
-            if (iterOperand.value() == argument) {
-              loopArg = scfFor.getRegionIterArgs()[iterOperand.index()];
-              break;
-            }
-          }
-
-          for (auto scfForUser : loopArg.getUsers()) {
-            if (llvm::isa<imex::xetile::LoadTileOp>(scfForUser)) {
-              loadUser = scfForUser;
-              ops.push_back(scfFor);
-              ops.push_back(scfForUser);
-            } else if (llvm::isa<imex::xetile::UpdateTileOffsetOp>(
-                           scfForUser)) {
-              ops.push_back(scfFor);
-              ops.push_back(scfForUser);
-            }
-          }
-        }
-      }
-      if (!loadUser)
-        return mlir::WalkResult::skip();
-    } else
-      return mlir::WalkResult::skip();
-
-    // LoadOp must be consumed by a transpose
-    if (!(loadUser->hasOneUse() &&
-          llvm::isa<mlir::vector::TransposeOp>(*loadUser->user_begin())))
-      return mlir::WalkResult::skip();
-    auto transposeOp =
-        llvm::cast<mlir::vector::TransposeOp>(*loadUser->user_begin());
-    ops.push_back(transposeOp);
-
-    auto consumerOp = *transposeOp->user_begin();
-
-    // Check if vector.transpose is consumed by TileMMA directly or
-    // is consumed by some pre-op and then TileMMA.
-    if (!llvm::isa<imex::xetile::TileMMAOp>(consumerOp)) {
-      if (!OpTrait::hasElementwiseMappableTraits(consumerOp) &&
-          !(llvm::isa<mlir::vector::BroadcastOp>(consumerOp))) {
-        return mlir::WalkResult::skip();
-      } else {
-        if (!(consumerOp->hasOneUse() &&
-              llvm::isa<imex::xetile::TileMMAOp>(*consumerOp->user_begin())))
-          return mlir::WalkResult::skip();
-      }
-    }
-
-    // At this point, we have a candidate def-use chain for optimization.
-    for (auto op : ops) {
-      if (op->getNumResults() > 0)
-        opSgLayoutMap[op->getResult(0)] = {0, 1};
-    }
-
-    return mlir::WalkResult::advance();
-  });
+  if constexpr (numOperands == 1) {
+    return rewriter.create<Op>(loc, operands[0][i]);
+  } else if constexpr (numOperands == 2) {
+    return rewriter.create<Op>(loc, operands[0][i], operands[1][i]);
+  } else if constexpr (numOperands == 3) {
+    return rewriter.create<Op>(loc, operands[0][i], operands[1][i],
+                               operands[2][i]);
+  }
 }
 
-void populateXeTileWgToSgPatterns(imex::XeOneToNTypeConverter &converter,
-                                  mlir::RewritePatternSet &patterns) {
-  patterns.insert<WGToSGInitTileOpPattern, WGToSGLoadTileOpPattern,
-                  WGToSGTileMMAOpPattern, WGToSGStoreTileOpPattern,
+// This Pattern transforms arith/math ops where the ops have same arg and result type
+// Example ops :
+// math.exp {{%.*}} : vector<40x96xf32>
+// arith.addf {{.*}}, {{.*}} : vector<1x32xf16>
+template <typename Op, int numOperands>
+class WGToSGElementWiseOpSameArgAndResultTypePattern : public OpConversionPattern<Op> {
+  using OpConversionPattern<Op>::OpConversionPattern;
+  using RangeT = llvm::ArrayRef<mlir::ValueRange>;
+  using OneToNOpAdaptor =
+      typename Op::template GenericAdaptor<ArrayRef<ValueRange>>;
+
+  mlir::LogicalResult
+  matchAndRewrite(Op op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto res = op.getResult();
+    auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
+
+    auto mapAttr =
+        llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("map"));
+    if (!mapAttr) {
+      return mlir::failure();
+    }
+
+    auto wgTileShape = resType.getShape();
+    auto sgData = mapAttr.getSgData();
+    auto sgLayout = mapAttr.getSgLayout();
+
+    auto newTy =
+        mlir::VectorType::get({sgData[0], sgData[1]}, resType.getElementType());
+
+    // Get all the slices of Operands
+    auto operands = adaptor.getOperands();
+
+    llvm::SmallVector<llvm::SmallVector<mlir::Value>> operand;
+    if (numOperands == 1)
+      operand.push_back(operands[0]);
+    else if (numOperands == 2) {
+      operand.push_back(operands[0]);
+      operand.push_back(operands[1]);
+    } else {
+      operand.push_back(operands[0]);
+      operand.push_back(operands[1]);
+      operand.push_back(operands[2]);
+    }
+
+    size_t numOps;
+   if (sgLayout[0] * sgData[0] == wgTileShape[0] ||
+       sgLayout[1] * sgData[1] == wgTileShape[1] ||
+       sgLayout[1] * sgData[0] == wgTileShape[0] ||  // For pre-op between load
+       sgLayout[0] * sgData[1] == wgTileShape[1])    // & transpose
+      numOps = 1; // 1:1 mapping
+    else
+      numOps = (wgTileShape[0] / (sgLayout[0] * sgData[0])) +
+               (wgTileShape[1] / (sgLayout[1] * sgData[1]));
+
+    llvm::SmallVector<::mlir::Value> newOps;
+    for (size_t i = 0; i < numOps; i++) {
+      auto newOp = createOp<Op, numOperands>(rewriter, op.getLoc(), operand, i);
+      newOp->getResult(0).setType(newTy);
+      newOps.push_back(newOp);
+    }
+
+    rewriter.replaceOpWithMultiple(op, {newOps});
+    return mlir::success();
+  }
+};
+
+// This Pattern trasforms arith ops where the ops have same shape as arg but
+// different result type
+// Example ops :
+// arith.bitcast {{%.*}} : vector<32x32xf16> to vector<32x32xi16>
+// arith.uitofp {{%.*}} : vector<32x32xi16> to vector<32x32xf16>
+template <typename Op>
+class WGToSGArithDifferentResultTypePattern : public OpConversionPattern<Op> {
+  using OpConversionPattern<Op>::OpConversionPattern;
+  using RangeT = llvm::ArrayRef<mlir::ValueRange>;
+  using OpAdaptor = typename Op::template GenericAdaptor<RangeT>;
+
+  mlir::LogicalResult
+  matchAndRewrite(Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    auto res = op.getResult();
+    auto resType = mlir::dyn_cast<mlir::VectorType>(res.getType());
+
+    auto mapAttr =
+        llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("map"));
+    if (!mapAttr) {
+      return mlir::failure();
+    }
+
+    auto sgData = mapAttr.getSgData();
+
+    auto newTy =
+        mlir::VectorType::get({sgData[0], sgData[1]}, resType.getElementType());
+
+    auto newOp = rewriter.create<Op>(op.getLoc(), newTy, adaptor.getOperands()[0]);
+    rewriter.replaceOp(op, newOp);
+    return mlir::success();
+  }
+};
+
+// arith::CmpIOp and arith::CmpFOp
+template <typename Op>
+class WGToSGElementWiseOpComparisonOpsPattern : public OpConversionPattern<Op> {
+  using OpConversionPattern<Op>::OpConversionPattern;
+  using RangeT = llvm::ArrayRef<mlir::ValueRange>;
+  using OpAdaptor = typename Op::template GenericAdaptor<RangeT>;
+
+  mlir::LogicalResult
+  matchAndRewrite(Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    auto arg = op.getLhs();
+    auto argType = mlir::dyn_cast<mlir::VectorType>(arg.getType());
+    auto result = op.getResult();
+    auto resType = mlir::dyn_cast<mlir::VectorType>(result.getType());
+
+    auto mapAttr =
+        llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("map"));
+    if (!mapAttr) {
+      return mlir::failure();
+    }
+
+    auto sgData = mapAttr.getSgData();
+
+    auto newTy =
+        mlir::VectorType::get({sgData[0], sgData[1]}, argType.getElementType());
+
+    auto resTy =
+        mlir::VectorType::get({sgData[0], sgData[1]}, resType.getElementType());
+
+    auto newOp = rewriter.create<Op>(op.getLoc(), newTy, op.getPredicate(),
+                                 adaptor.getLhs()[0], adaptor.getRhs()[0]);
+    newOp->getResult(0).setType(resTy);
+    rewriter.replaceOp(op, newOp);
+    return mlir::success();
+  }
+};
+
+static bool hasMap(mlir::Operation* op){
+  if (llvm::isa<imex::xetile::LoadTileOp>(op)){
+    auto tileTy =  mlir::dyn_cast<xetile::TileType>(op->getOperand(0).getType());
+    if (tileTy.getWgMap())
+      return true;
+    else
+      return false;
+  }
+
+  auto mapAttr = llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("map"));
+  auto wgMapAttr = llvm::dyn_cast_or_null<xetile::WorkGroupMapAttr>(op->getAttr("wg_map_a"));
+  if (!mapAttr && !wgMapAttr)
+    return false;
+  else
+    return true;
+}
+
+
+// This function traverses backwards through loop-carried dependencies in SCF
+//  `for` loops to find the original (pre-loop) value.
+static Value getPreLoopValue(Value val) {
+  while (auto blockArg = mlir::dyn_cast<BlockArgument>(val)) {
+    if (auto forOp = mlir::dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp())) {
+      // Get the index of blockArg in the region
+      unsigned argIndex = blockArg.getArgNumber();
+
+      // Ensure the block argument belongs to iter_args, not the induction variable
+      unsigned numIterArgs = forOp.getInitArgs().size();
+      unsigned firstIterArgIdx = forOp.getRegion().getArguments().size() - numIterArgs;
+
+      if (argIndex >= firstIterArgIdx) {
+        val = forOp.getInitArgs()[argIndex - firstIterArgIdx];  // Corrected index
+      } else {
+        break;  // If it's not an iter_arg, stop traversal
+      }
+    } else {
+      break;
+    }
+  }
+  return val;
+}
+
+template <typename OpType>
+Operation *findOp(Value val) {
+  SmallVector<Value, 4> worklist{val};
+  DenseSet<Value> visited;
+
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    if (!current || !visited.insert(current).second) continue; // Avoid cycles
+
+    // Handle scf.for iter_args
+    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(current)) {
+      current = getPreLoopValue(current);
+    }
+
+    // Check if the defining operation is of the desired type
+    if (Operation *defOp = current.getDefiningOp()) {
+      if (llvm::isa<OpType>(defOp)) return defOp;
+      for (Value operand : defOp->getOperands()) {
+        worklist.push_back(operand);
+      }
+    }
+  }
+  return nullptr;
+}
+
+static void analyzeTransposeOps(mlir::Operation *op,
+                         llvm::DenseMap<mlir::Value, std::array<int, 2>> &sgLayoutMap) {
+
+  op->walk([&](mlir::vector::TransposeOp transposeOp) -> mlir::WalkResult {
+    Value transposeInput = transposeOp->getOperand(0);
+    Operation *loadOp = findOp<imex::xetile::LoadTileOp>(transposeInput);
+    if (!loadOp) return mlir::WalkResult::skip();
+
+    // Find corresponding InitializeOp (allowing other ops in between)
+    Value loadSource = loadOp->getOperand(0);
+    Operation *initializeOp = findOp<imex::xetile::InitTileOp>(loadSource);
+    if (!initializeOp) return mlir::WalkResult::skip();
+
+    // At this point, we have a candidate def-use chain for optimization.
+    sgLayoutMap[transposeOp->getResult(0)] = {0, 1};
+    sgLayoutMap[initializeOp->getResult(0)] = {0, 1};
+    return mlir::WalkResult::advance();
+
+ });
+}
+
+void populateXeTileWgToSgPatterns(mlir::RewritePatternSet &patterns,
+                                  llvm::DenseMap<mlir::Value, std::array<int, 2>> &sgLayoutMap) {
+  patterns.insert<WGToSGInitTileOpPattern, WGToSGVectorTranspose>(patterns.getContext(),
+                  sgLayoutMap);
+  patterns.insert<WGToSGLoadTileOpPattern, WGToSGTileMMAOpPattern, WGToSGStoreTileOpPattern,
                   WGToSGSCFForOpPattern, WGToSGUpdateTileOffsetOpPattern,
-                  WGToSGSCFYieldOpPattern, WGToSGVectorTranspose, WGToSGVectorBroadcast,
-                  WGToSGXeTileConvertLayout, WGToSGPrefetchOpPattern, WGToSGArithExtFOpPattern,
-                  WGToSGArithTruncFOpPattern, WGToSGVectorShapeCast, WGToSGVectorMultiDimReductionOp
-                  >(patterns.getContext(), converter);
-  patterns.insert<WGToSGElementWiseOpPattern<mlir::math::ExpOp, 1>,
-                  WGToSGElementWiseOpPattern<mlir::math::SqrtOp, 1>,
-                  WGToSGElementWiseOpPattern<mlir::arith::AddFOp, 2>,
-                  WGToSGArithConstantOpPattern>(patterns.getContext(), converter);
+                  WGToSGSCFYieldOpPattern, WGToSGVectorBroadcast,
+                  WGToSGXeTileConvertLayout, WGToSGPrefetchOpPattern,
+                  WGToSGVectorShapeCast, WGToSGVectorMultiDimReductionOp
+                  >(patterns.getContext());
+  patterns.insert<WGToSGElementWiseOpSameArgAndResultTypePattern<mlir::math::ExpOp, 1>,
+                  WGToSGElementWiseOpSameArgAndResultTypePattern<mlir::math::SqrtOp, 1>,
+                  WGToSGElementWiseOpSameArgAndResultTypePattern<mlir::arith::AddFOp, 2>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::TruncFOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::TruncIOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::ExtFOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::ExtSIOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::ExtUIOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::SIToFPOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::UIToFPOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::FPToSIOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::FPToUIOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::IndexCastUIOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::IndexCastOp>,
+                  WGToSGArithDifferentResultTypePattern<mlir::arith::BitcastOp>,
+                  WGToSGElementWiseOpComparisonOpsPattern<mlir::arith::CmpIOp>,
+                  WGToSGElementWiseOpComparisonOpsPattern<mlir::arith::CmpFOp>,
+                  WGToSGArithConstantOpPattern>(patterns.getContext());
 }
 
 // Transforms WG XeTile IR to SG XeTile
@@ -1102,6 +1139,23 @@ class XeTileWgToSgPass
 
 public:
   XeTileWgToSgPass() = default;
+
+  // Create a Map to store SG layout_order if we have a load
+  // which is transposed before being passed to MMA.
+  // Sg layout_order [0, 1] means the subgroup ids are arranged
+  // in column major. Default is row-major [1, 0].
+  // For example:
+  // If we have a sgLayout [4, 8] with layout_order [0, 1]
+  // the sg id's will be arranged in the following manner
+  // | 0  | 4 | 8  | 12 | 16 | 20 | 24 | 28 |
+  // | 1  | 5 | 9  | 13 | 17 | 21 | 25 | 29 |
+  // | 2  | 6 | 10 | 14 | 18 | 22 | 26 | 30 |
+  // | 3  | 7 | 11 | 15 | 19 | 23 | 27 | 31 |
+
+  // Internally we use this layout_order information to calculate the
+  // offset for init and load tile
+
+  llvm::DenseMap<mlir::Value, std::array<int, 2>> sgLayoutMap;
 
   void runOnOperation() override {
     mlir::MLIRContext &context = getContext();
@@ -1116,8 +1170,7 @@ public:
 
     mlir::Operation *op = getOperation();
     // Run the analysis to find the candidates for the transformation
-    analyzeInitTileOps(op);
-    XeOneToNTypeConverter typeConverter(context);
+    analyzeTransposeOps(op, sgLayoutMap);
     mlir::ConversionTarget target(context);
     mlir::RewritePatternSet patterns(&context);
 
@@ -1165,16 +1218,15 @@ public:
 
     target.addDynamicallyLegalOp<mlir::scf::ForOp>(
         [&](mlir::scf::ForOp op) -> bool {
-          if(op.getInitArgs().empty())
-            return true;
           for (auto arg : op.getInitArgs()) {
             auto tileTy = mlir::dyn_cast<xetile::TileType>(arg.getType());
-            if (!tileTy)
-              continue;
-            else if (!tileTy.getWgMap())
-              return true;
+            auto vecTy =  mlir::dyn_cast<mlir::VectorType>(arg.getType());
+            if (tileTy && tileTy.getWgMap())
+              return false;
+            if (vecTy && hasMap(arg.getDefiningOp()))
+              return false;
           }
-          return false;
+          return true;
         });
 
     target.addDynamicallyLegalOp<mlir::scf::YieldOp>(
@@ -1182,7 +1234,10 @@ public:
           // For cases with scf.if having hidden yield
           for (auto result: op.getResults()) {
             auto tileTy = mlir::dyn_cast<xetile::TileType>(result.getType());
+            auto vecTy =  mlir::dyn_cast<mlir::VectorType>(result.getType());
             if (tileTy && tileTy.getWgMap())
+              return false;
+            if (vecTy && hasMap(result.getDefiningOp()))
               return false;
           }
           return true;
@@ -1190,7 +1245,11 @@ public:
 
     target.addDynamicallyLegalOp<mlir::arith::ConstantOp, mlir::arith::AddFOp,
                                  mlir::math::ExpOp, mlir::math::SqrtOp, mlir::arith::ExtFOp,
-                                 mlir::arith::TruncFOp, mlir::vector::TransposeOp,
+                                 mlir::arith::ExtSIOp, mlir::arith::ExtUIOp, mlir::arith::FPToSIOp,
+                                 mlir::arith::FPToUIOp, mlir::arith::UIToFPOp, mlir::arith::SIToFPOp,
+                                 mlir::arith::TruncFOp, mlir::arith::TruncIOp, mlir::arith::CmpIOp,
+                                 mlir::arith::CmpFOp,  mlir::arith::IndexCastUIOp,
+                                 mlir::arith::IndexCastOp, mlir::arith::BitcastOp, mlir::vector::TransposeOp,
                                  mlir::vector::BroadcastOp, mlir::vector::MultiDimReductionOp,
                                  mlir::vector::ShapeCastOp>(
         [&](mlir::Operation *op) -> bool {
@@ -1219,7 +1278,7 @@ public:
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
-    populateXeTileWgToSgPatterns(typeConverter, patterns);
+    populateXeTileWgToSgPatterns(patterns, sgLayoutMap);
     if (mlir::failed(
             mlir::applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
