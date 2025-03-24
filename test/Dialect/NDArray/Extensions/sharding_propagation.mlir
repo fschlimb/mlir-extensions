@@ -139,4 +139,20 @@ func.func @test_shard_propagate_insert_slice_2d_2(%arg0: tensor<1024x1024xi64>, 
     return
 }
 
+// CHECK-LABEL: @test_permute_dims
+func.func @test_permute_dims(%arg0: tensor<600x1200xi64>) -> tensor<1200x600xi64> {
+    %sharding = mesh.sharding @mesh4x4 split_axes = [[0], [1]] : !mesh.sharding
+    %sharding_arg0 = mesh.shard %arg0 to %sharding : tensor<600x1200xi64>
+    // CHECK: %[[sharding:.*]] = mesh.sharding @mesh4x4 split_axes = {{\[\[}}0], [1]] : !mesh.sharding
+    // CHECK-NEXT: %[[sharding_arg0:.*]] = mesh.shard %arg0 to %[[sharding]] : tensor<600x1200xi64>
+    // CHECK-NEXT: %[[sharding_src:.*]] = mesh.sharding @mesh4x4 split_axes = {{\[\[}}0], [1]] : !mesh.sharding
+    // CHECK-NEXT: %[[sharding_annotated_src:.*]] = mesh.shard %[[sharding_arg0]] to %[[sharding_src]] annotate_for_users : tensor<600x1200xi64>
+    // CHECK-NEXT: %0 = ndarray.permute_dims %[[sharding_annotated_src]] [1, 0] : tensor<600x1200xi64> -> tensor<1200x600xi64>
+    %0 = ndarray.permute_dims %sharding_arg0 [1, 0] : tensor<600x1200xi64> -> tensor<1200x600xi64>
+    // CHECK: %[[sharding_dst:.*]] = mesh.sharding @mesh4x4 split_axes = {{\[\[}}1], [0]] : !mesh.sharding
+    // CHECK-NEXT: %[[sharding_annotated_dst:.*]] = mesh.shard %0 to %[[sharding_dst]] : tensor<1200x600xi64>
+    // CHECK-NEXT: return %[[sharding_annotated_dst]] : tensor<1200x600xi64>
+    return %0 : tensor<1200x600xi64>
+}
+
 }

@@ -36,7 +36,6 @@ inline void registerAllDialects(::mlir::DialectRegistry &registry) {
                     ::imex::region::RegionDialect,
                     ::imex::xetile::XeTileDialect,
                     ::imex::gpux::GPUXDialect>();
-
   ndarray::registerAllExtensions(registry);
   // clang-format on
 
