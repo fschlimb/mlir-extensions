@@ -454,6 +454,20 @@ def PermuteDimsOp : NDArray_Op<"permute_dims", []> {
     $source $axes attr-dict `:` qualified(type($source)) `->` qualified(type(results))
   }];
 
+  let extraClassDeclaration = [{
+    
+    static mlir::Type permutedTensorType(mlir::RankedTensorType tensorType, const ::llvm::ArrayRef<int64_t> &axes) {
+      auto shape = tensorType.getShape();
+      auto rank = shape.size();
+      mlir::SmallVector<int64_t> newShape(rank);
+      for (size_t i = 0; i < rank; ++i) {
+        newShape[i] = shape[axes[i]];
+      }
+      return mlir::RankedTensorType::get(newShape, tensorType.getElementType());
+    }
+
+  }];
+
   let hasCanonicalizer = 1;
 }
 

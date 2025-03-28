@@ -724,8 +724,8 @@ struct PermuteDimsShardingInterface
   LogicalResult
   addShardingAnnotations(::mlir::Operation *op, OpBuilder &b,
                          const ShardingOption &shardingOption) const {
-    auto pdop = cast<PermuteDimsOp>(op);
-    auto srcShardOp = pdop.getSource().getDefiningOp<mesh::ShardOp>();
+    auto pdOp = cast<PermuteDimsOp>(op);
+    auto srcShardOp = pdOp.getSource().getDefiningOp<mesh::ShardOp>();
     mlir::mesh::MeshSharding srcSharding;
 
     if (srcShardOp) {
@@ -736,18 +736,20 @@ struct PermuteDimsShardingInterface
       for (const auto &v : shardingOption.shardingArray) {
         splitAxes.emplace_back(MeshAxesAttr::get(op->getContext(), v));
       }
-      srcSharding = mlir::mesh::MeshSharding::get(shardingOption.mesh, splitAxes);
+      srcSharding =
+          mlir::mesh::MeshSharding::get(shardingOption.mesh, splitAxes);
     }
     maybeInsertSourceShardingAnnotation(srcSharding, op->getOpOperand(0), b);
 
     mlir::mesh::MeshSharding dstSharding;
     {
       SmallVector<MeshAxesAttr> splitAxes;
-      const auto axes = pdop.getAxes();
+      const auto axes = pdOp.getAxes();
       for (size_t i = 0; i < axes.size(); ++i) {
         splitAxes.emplace_back(srcSharding.getSplitAxes()[axes[i]]);
       }
-      dstSharding = std::move(mlir::mesh::MeshSharding::get(srcSharding.getMeshAttr(), splitAxes));
+      dstSharding = std::move(
+          mlir::mesh::MeshSharding::get(srcSharding.getMeshAttr(), splitAxes));
     }
     maybeInsertTargetShardingAnnotation(dstSharding, op->getOpResult(0), b);
 
@@ -760,23 +762,18 @@ struct PermuteDimsShardingInterface
                         IRMapping &spmdizationMap,
                         SymbolTableCollection &symbolTableCollection,
                         OpBuilder &builder) const {
-    // if (resultShardings.size() != 1) {
-    //   return failure();
-    // }
-    // auto typedOp = cast<imex::ndarray::PermuteDimsOp>(op);
-    // auto shp =
-    // cast<RankedTensorType>(typedOp.getSource().getType()).getShape(); auto
-    // offSzStr = getLocalOffSzAndStrFromSlice(
-    //     typedOp, shp, operandShardings[0], resultShardings[0],
-    //     operandShardings[0], symbolTableCollection, builder);
-    // if (failed(offSzStr)) {
-    //   return failure();
-    // }
-    // auto &[lShardOffs, lShardSizes, lShardStrides] = offSzStr.value();
-    // auto newSubview = builder.create<imex::ndarray::PermuteDimsOp>(
-    //     op->getLoc(), spmdizedOperands[0], lShardOffs, lShardSizes,
-    //     lShardStrides);
-    // spmdizationMap.map(op->getResult(0), newSubview.getResult());
+    // TODO: check it's a permuted sharding
+    if (resultShardings.size() != 1) {
+      return op->emitOpError("incorrect sharding annotations");
+    }
+    // TODO: check sharding
+    auto pdOp = cast<imex::ndarray::PermuteDimsOp>(op);
+    auto resultType = imex::ndarray::PermuteDimsOp::permutedTensorType(
+        cast<RankedTensorType>(spmdizedOperands[0].getType()), pdOp.getAxes());
+    auto newOp = builder.create<imex::ndarray::PermuteDimsOp>(
+        op->getLoc(), mlir::TypeRange{resultType}, spmdizedOperands,
+        op->getAttrs());
+    spmdizationMap.map(op->getResult(0), newOp.getResult());
     return success();
   }
 };

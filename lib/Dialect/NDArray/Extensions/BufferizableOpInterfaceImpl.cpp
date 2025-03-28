@@ -180,6 +180,71 @@ struct InsertSliceOpInterface
     return success();
   }
 };
+
+/// Bufferization of tensor.extract_slice. Replace with memref.subview.
+struct PermuteDimsOpInterface
+    : public BufferizableOpInterface::ExternalModel<PermuteDimsOpInterface,
+                                                    PermuteDimsOp> {
+  bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
+                              const AnalysisState &state) const {
+    return false;
+  }
+
+  bool bufferizesToMemoryWrite(Operation *op, OpOperand &opOperand,
+                               const AnalysisState &state) const {
+    return false;
+  }
+
+  AliasingValueList getAliasingValues(Operation *op, OpOperand &opOperand,
+                                      const AnalysisState &state) const {
+    return {{op->getOpResult(0), BufferRelation::Unknown}};
+  }
+
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const BufferizationOptions &options) const {
+    auto permuteDimsOp = cast<PermuteDimsOp>(op);
+    Location loc = permuteDimsOp.getLoc();
+
+    // Get source buffer.
+    FailureOr<Value> srcMemref =
+        getBuffer(rewriter, permuteDimsOp.getSource(), options);
+    if (failed(srcMemref))
+      return failure();
+
+    // Take a subview of the source buffer.
+    auto resultMemrefType =
+        bufferization::getBufferType(permuteDimsOp.getResult(), options);
+    if (failed(resultMemrefType))
+      return failure();
+
+    auto perm = ::mlir::AffineMapAttr::get(::mlir::AffineMap::getPermutationMap(
+        permuteDimsOp.getAxes(), rewriter.getContext()));
+    Value transposeOp = rewriter.create<memref::TransposeOp>(
+        loc, llvm::cast<MemRefType>(*resultMemrefType), *srcMemref, perm);
+
+    replaceOpWithBufferizedValues(rewriter, op, transposeOp);
+    return success();
+  }
+
+  // FailureOr<BaseMemRefType>
+  // getBufferType(Operation *op, Value value, const BufferizationOptions
+  // &options,
+  //               SmallVector<Value> &invocationStack) const {
+  //   auto permuteDimsOp = cast<PermuteDimsOp>(op);
+  //   assert(value == permuteDimsOp.getResult() && "invalid value");
+  //   auto srcMemrefType =
+  //   bufferization::getBufferType(permuteDimsOp.getSource(),
+  //                                                     options,
+  //                                                     invocationStack);
+  //   if (failed(srcMemrefType))
+  //     return failure();
+  //   return
+  //   cast<BaseMemRefType>(memref::TransposeOp::inferRankReducedResultType(
+  //       permuteDimsOp.getType().getShape(),
+  //       llvm::cast<MemRefType>(*srcMemrefType), permuteDimsOp.getAxes()));
+  // }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//

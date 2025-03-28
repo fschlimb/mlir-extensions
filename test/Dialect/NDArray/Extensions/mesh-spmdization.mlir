@@ -116,3 +116,14 @@ func.func @test_subview_insert_slice_2d(%arg0: tensor<1200x1200xi64>) -> tensor<
     // CHECK: return [[v4]] : tensor<302x302xi64>
     return %sharding_annotated_7 : tensor<1200x1200xi64>
 }
+
+func.func @test_permute_dims(%arg0: tensor<600x1200xi64>) -> tensor<1200x600xi64> {
+%sharding = mesh.sharding @mesh4x4 split_axes = [[0], [1]] : !mesh.sharding
+%sharding_annotated = mesh.shard %arg0 to %sharding : tensor<600x1200xi64>
+%sharding_0 = mesh.sharding @mesh4x4 split_axes = [[0], [1]] : !mesh.sharding
+%sharding_annotated_1 = mesh.shard %sharding_annotated to %sharding_0 annotate_for_users : tensor<600x1200xi64>
+%0 = ndarray.permute_dims %sharding_annotated_1 [1, 0] : tensor<600x1200xi64> -> tensor<1200x600xi64>
+%sharding_2 = mesh.sharding @mesh4x4 split_axes = [[1], [0]] : !mesh.sharding
+%sharding_annotated_3 = mesh.shard %0 to %sharding_2 : tensor<1200x600xi64>
+return %sharding_annotated_3 : tensor<1200x600xi64>
+}

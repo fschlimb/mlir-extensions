@@ -13,16 +13,15 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#include <llvm/ADT/SmallVector.h>
 #include <imex/Dialect/NDArray/IR/NDArrayOps.h>
 #include <imex/Utils/PassUtils.h>
-#include <mlir/IR/Value.h>
-#include <mlir/Support/LogicalResult.h>
+#include <llvm/ADT/SmallVector.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Dialect.h>
 #include <mlir/IR/DialectImplementation.h>
 #include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/OpImplementation.h>
+#include <mlir/Support/LogicalResult.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -67,7 +66,7 @@ public:
 
     if (isSorted(axes)) {
       rewriter.replaceOpWithNewOp<::mlir::tensor::CastOp>(op, op.getType(),
-                                                         source);
+                                                          source);
       return ::mlir::success();
     }
 
@@ -76,21 +75,15 @@ public:
       return ::mlir::failure();
     }
 
-    const auto &oldShape = sourceType.getShape();
-    ::mlir::SmallVector<int64_t> newShape(rank);
-    for (int64_t i = 0; i < rank; ++i) {
-      newShape[i] = oldShape[axes[i]];
-    }
-
     auto newReturnType =
-        sourceType.cloneWith(newShape, sourceType.getElementType());
+        imex::ndarray::PermuteDimsOp::permutedTensorType(sourceType, axes);
     if (newReturnType == oldReturnType)
       return ::mlir::failure();
 
     auto newOp = rewriter.create<imex::ndarray::PermuteDimsOp>(
         op->getLoc(), newReturnType, source, axes);
     rewriter.replaceOpWithNewOp<::mlir::tensor::CastOp>(op, oldReturnType,
-                                                       newOp);
+                                                        newOp);
 
     return mlir::success();
   }
