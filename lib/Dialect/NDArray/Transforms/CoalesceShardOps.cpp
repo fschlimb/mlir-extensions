@@ -40,6 +40,7 @@
 
 #include <mlir/Analysis/AliasAnalysis/LocalAliasAnalysis.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/Linalg/Utils/Utils.h>
 #include <mlir/Dialect/Mesh/IR/MeshDialect.h>
 #include <mlir/Dialect/Mesh/IR/MeshOps.h>
 #include <mlir/Dialect/Tosa/IR/TosaOps.h>
@@ -63,34 +64,42 @@ bool isCreator(::mlir::Operation *op) {
 }
 
 bool isElementwise(::mlir::Operation *op) {
-  return ::mlir::isa<
-      ::mlir::tosa::AddOp, ::mlir::tosa::ArithmeticRightShiftOp,
-      ::mlir::tosa::BitwiseAndOp, ::mlir::tosa::BitwiseOrOp,
-      ::mlir::tosa::BitwiseXorOp, ::mlir::tosa::IntDivOp,
-      ::mlir::tosa::LogicalAndOp, ::mlir::tosa::LogicalLeftShiftOp,
-      ::mlir::tosa::LogicalRightShiftOp, ::mlir::tosa::LogicalOrOp,
-      ::mlir::tosa::LogicalXorOp, ::mlir::tosa::MaximumOp,
-      ::mlir::tosa::MinimumOp, ::mlir::tosa::MulOp, ::mlir::tosa::PowOp,
-      ::mlir::tosa::SubOp, ::mlir::tosa::SelectOp, ::mlir::tosa::EqualOp,
-      ::mlir::tosa::GreaterOp, ::mlir::tosa::GreaterEqualOp,
-      ::mlir::tosa::ClampOp, ::mlir::tosa::SigmoidOp, ::mlir::tosa::TanhOp,
-      ::mlir::tosa::ErfOp, ::mlir::tosa::AbsOp, ::mlir::tosa::BitwiseNotOp,
-      ::mlir::tosa::CeilOp, ::mlir::tosa::ClzOp, ::mlir::tosa::CosOp,
-      ::mlir::tosa::ExpOp, ::mlir::tosa::FloorOp, ::mlir::tosa::LogOp,
-      ::mlir::tosa::LogicalNotOp, ::mlir::tosa::NegateOp,
-      ::mlir::tosa::ReciprocalOp, ::mlir::tosa::RsqrtOp, ::mlir::tosa::SinOp,
-      ::mlir::linalg::AbsOp, ::mlir::linalg::AddOp, ::mlir::linalg::CeilOp,
-      ::mlir::linalg::Conv3DOp, ::mlir::linalg::CopyOp, ::mlir::linalg::DivOp,
-      ::mlir::linalg::DivUnsignedOp, ::mlir::linalg::ElemwiseBinaryOp,
-      ::mlir::linalg::ElemwiseUnaryOp, ::mlir::linalg::ErfOp,
-      ::mlir::linalg::ExpOp, ::mlir::linalg::FillOp,
-      ::mlir::linalg::FillRng2DOp, ::mlir::linalg::FloorOp,
-      ::mlir::linalg::LogOp, ::mlir::linalg::MapOp, ::mlir::linalg::MaxOp,
-      ::mlir::linalg::MinOp, ::mlir::linalg::MulOp, ::mlir::linalg::NegFOp,
-      ::mlir::linalg::PowFOp, ::mlir::linalg::ReciprocalOp,
-      ::mlir::linalg::RoundOp, ::mlir::linalg::RsqrtOp, ::mlir::linalg::SqrtOp,
-      ::mlir::linalg::SquareOp, ::mlir::linalg::SubOp, ::mlir::linalg::TanhOp>(
-      op);
+  if (::mlir::isa<
+          ::mlir::tosa::AddOp, ::mlir::tosa::ArithmeticRightShiftOp,
+          ::mlir::tosa::BitwiseAndOp, ::mlir::tosa::BitwiseOrOp,
+          ::mlir::tosa::BitwiseXorOp, ::mlir::tosa::IntDivOp,
+          ::mlir::tosa::LogicalAndOp, ::mlir::tosa::LogicalLeftShiftOp,
+          ::mlir::tosa::LogicalRightShiftOp, ::mlir::tosa::LogicalOrOp,
+          ::mlir::tosa::LogicalXorOp, ::mlir::tosa::MaximumOp,
+          ::mlir::tosa::MinimumOp, ::mlir::tosa::MulOp, ::mlir::tosa::PowOp,
+          ::mlir::tosa::SubOp, ::mlir::tosa::SelectOp, ::mlir::tosa::EqualOp,
+          ::mlir::tosa::GreaterOp, ::mlir::tosa::GreaterEqualOp,
+          ::mlir::tosa::ClampOp, ::mlir::tosa::SigmoidOp, ::mlir::tosa::TanhOp,
+          ::mlir::tosa::ErfOp, ::mlir::tosa::AbsOp, ::mlir::tosa::BitwiseNotOp,
+          ::mlir::tosa::CeilOp, ::mlir::tosa::ClzOp, ::mlir::tosa::CosOp,
+          ::mlir::tosa::ExpOp, ::mlir::tosa::FloorOp, ::mlir::tosa::LogOp,
+          ::mlir::tosa::LogicalNotOp, ::mlir::tosa::NegateOp,
+          ::mlir::tosa::ReciprocalOp, ::mlir::tosa::RsqrtOp,
+          ::mlir::tosa::SinOp>(op))
+    return true;
+  if (auto typedOp = ::mlir::dyn_cast<::mlir::linalg::LinalgOp>(op))
+    if (mlir::linalg::isElementwise(typedOp))
+      return true;
+  if (mlir::isa<
+          ::mlir::linalg::AbsOp, ::mlir::linalg::AddOp, ::mlir::linalg::CeilOp,
+          ::mlir::linalg::Conv3DOp, ::mlir::linalg::CopyOp,
+          ::mlir::linalg::DivOp, ::mlir::linalg::DivUnsignedOp,
+          ::mlir::linalg::ElemwiseBinaryOp, ::mlir::linalg::ElemwiseUnaryOp,
+          ::mlir::linalg::ErfOp, ::mlir::linalg::ExpOp, ::mlir::linalg::FillOp,
+          ::mlir::linalg::FillRng2DOp, ::mlir::linalg::FloorOp,
+          ::mlir::linalg::LogOp, ::mlir::linalg::MapOp, ::mlir::linalg::MaxOp,
+          ::mlir::linalg::MinOp, ::mlir::linalg::MulOp, ::mlir::linalg::NegFOp,
+          ::mlir::linalg::PowFOp, ::mlir::linalg::ReciprocalOp,
+          ::mlir::linalg::RoundOp, ::mlir::linalg::RsqrtOp,
+          ::mlir::linalg::SqrtOp, ::mlir::linalg::SquareOp,
+          ::mlir::linalg::SubOp, ::mlir::linalg::TanhOp>(op))
+    assert(false && "Named elemwise ops not caught as expected.");
+  return false;
 }
 
 // *******************************
